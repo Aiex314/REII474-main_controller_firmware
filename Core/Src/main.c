@@ -57,6 +57,20 @@ static void MX_TIM4_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+// TODO: Still need to properly test the rotary encoder!
+int16_t pulse_count;
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  GPIO_PinState A_status = HAL_GPIO_ReadPin(ROT_A_GPIO_Port, ROT_A_Pin);
+  GPIO_PinState B_status = HAL_GPIO_ReadPin(ROT_B_GPIO_Port, ROT_B_Pin);
+
+  if ((GPIO_Pin == ROT_A_Pin) == (A_status == B_status))
+	pulse_count++;
+  else
+    pulse_count--;
+}
+
+
 const float MAX_PWM_CRR = 5000.0f;
 
 void setMotorOutput(float v) {
@@ -254,11 +268,28 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, MOT_bwd_Pin|MOT_fwd_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : BLINK_Pin */
+  GPIO_InitStruct.Pin = BLINK_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(BLINK_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : ROT_A_Pin ROT_B_Pin */
+  GPIO_InitStruct.Pin = ROT_A_Pin|ROT_B_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : MOT_bwd_Pin MOT_fwd_Pin */
   GPIO_InitStruct.Pin = MOT_bwd_Pin|MOT_fwd_Pin;
@@ -266,6 +297,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

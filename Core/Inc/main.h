@@ -59,6 +59,14 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define BLINK_Pin GPIO_PIN_13
+#define BLINK_GPIO_Port GPIOC
+#define ROT_A_Pin GPIO_PIN_14
+#define ROT_A_GPIO_Port GPIOC
+#define ROT_A_EXTI_IRQn EXTI15_10_IRQn
+#define ROT_B_Pin GPIO_PIN_15
+#define ROT_B_GPIO_Port GPIOC
+#define ROT_B_EXTI_IRQn EXTI15_10_IRQn
 #define MOT_pwm_Pin GPIO_PIN_7
 #define MOT_pwm_GPIO_Port GPIOB
 #define MOT_bwd_Pin GPIO_PIN_8
