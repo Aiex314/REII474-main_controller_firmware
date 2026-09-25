@@ -22,6 +22,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <math.h>
+
+#include "nRF24_driver.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,6 +42,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+SPI_HandleTypeDef hspi1;
+
 TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN PV */
@@ -50,6 +54,7 @@ TIM_HandleTypeDef htim4;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -96,6 +101,39 @@ void setMotorOutput(float v) {
   }
 }
 
+void setupNRF24() {
+  // Turn off module while configuring it.
+  writeNRF24register(N24_CONFIG,    0b01111001); // Mask all interrupts, enable 1B CRC, keep power down, act as PTX
+
+  // Setup extra features. TODO: The toggleNRF24extraFeatures function doesn't seem to have an effect... find out why?
+  toggleNRF24extraFeatures();
+  writeNRF24register(N24_FEATURE,   0b00000111); // Enable all acknowledge payload features
+  writeNRF24register(N24_DYNPD,     0b00000001); // Enable dynamic payload in pipe 0
+
+  // Miscellaneous configuration settings.
+  writeNRF24register(N24_EN_AA,     0b00000001); // Only enable auto acknowledge on pipe 0
+  writeNRF24register(N24_EN_RXADDR, 0b00000001); // Only enable reception on pipe 0
+  writeNRF24register(N24_SETUP_AW,  0b00000011); // Set 5 byte address width
+  writeNRF24register(N24_SETUP_RETR,0b00010101); // 5 retransmissions, each spaced 500us apart
+  writeNRF24register(N24_RF_CH,     0b00000010); // Set frequency channel to 2... this is the datasheet's default, so I'll trust it for now
+  writeNRF24register(N24_RF_SETUP,  0b00000111); // 1Mbps tx rate, 0dBm tx gain, setup LNA gain (idk what that means)
+
+  // Setup TX and RX addresses.
+  const uint8_t device_addr[5] = {0b01101001, 0b10010110, 0b10010110, 0b01101001, 0b10101010};
+  setNRF24TXaddr(device_addr, 5);    // Configure TX address
+  setNRF24RXaddr(device_addr, 5, 0); // Configure RX address for pipe 0 to be the same as TX address
+
+  // Flush the buffers
+  flushNRF24buffers();
+
+  // Final configuration, and turn on the module
+  writeNRF24register(N24_CONFIG, 0b01111011); // Power up the nRF24
+  //TODO: Footnote d on Table 24 (pg. 58) says that DPL needs to be activated on both PTX and PRX
+  //      if you want to have payloads on the ACK packet. Configure this!
+
+  HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -128,22 +166,59 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM4_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
+
+  // Start the nRF24
+  setupNRF24();
 
   // Stop motor, then start PWM generation
   setMotorOutput(0.0f);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
 
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  float t = 0.0f;
+  int16_t last_recv = 0.0f;
+  uint16_t ack_number = 0;
+  uint8_t payload[4];
+
   while (1)
   {
-    setMotorOutput(sin(t));
-    t += 0.01f;
-    HAL_Delay(10);
+    uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
+//    uint8_t status = readNRF24status();
+
+    if ((fifo_status & 0b00000001) == 0) {
+      // Set new acknowledge payload
+      ++ack_number;
+      payload[0] = (pulse_count & 0xff00) >> 8;
+      payload[1] = pulse_count & 0x00ff;
+      payload[2] = (ack_number & 0xff00) >> 8;
+      payload[3] = ack_number & 0x00ff;
+      writeNRF24ackPayload((uint8_t*)payload, 8, 0);
+
+      // Reset pulse_count to get a relative measurement
+      pulse_count = 0;
+
+      // Read buffer to clear it
+      uint8_t recv_buf[32];
+      readNRF24payload(recv_buf, 8);
+
+      // Recover value from buffer
+      last_recv = recv_buf[0] * 0x100 + recv_buf[1];
+
+      setMotorOutput(last_recv / 3000.0f);
+
+      // Clear RX_DR interrupt
+      writeNRF24register(N24_STATUS, 0b01000000);
+
+
+      HAL_GPIO_TogglePin(BLINK_GPIO_Port, BLINK_Pin);
+    }
+
+    HAL_Delay(2);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -194,6 +269,44 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
 }
 
 /**
@@ -270,10 +383,17 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(NRF_CSN_GPIO_Port, NRF_CSN_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, MOT_bwd_Pin|MOT_fwd_Pin, GPIO_PIN_RESET);
@@ -290,6 +410,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : NRF_CE_Pin NRF_CSN_Pin */
+  GPIO_InitStruct.Pin = NRF_CE_Pin|NRF_CSN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : MOT_bwd_Pin MOT_fwd_Pin */
   GPIO_InitStruct.Pin = MOT_bwd_Pin|MOT_fwd_Pin;

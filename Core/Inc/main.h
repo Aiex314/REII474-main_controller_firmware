@@ -67,6 +67,10 @@ void Error_Handler(void);
 #define ROT_B_Pin GPIO_PIN_15
 #define ROT_B_GPIO_Port GPIOC
 #define ROT_B_EXTI_IRQn EXTI15_10_IRQn
+#define NRF_CE_Pin GPIO_PIN_12
+#define NRF_CE_GPIO_Port GPIOA
+#define NRF_CSN_Pin GPIO_PIN_15
+#define NRF_CSN_GPIO_Port GPIOA
 #define MOT_pwm_Pin GPIO_PIN_7
 #define MOT_pwm_GPIO_Port GPIOB
 #define MOT_bwd_Pin GPIO_PIN_8
