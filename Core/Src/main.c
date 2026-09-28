@@ -47,6 +47,7 @@ SPI_HandleTypeDef hspi1;
 TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN PV */
+SPI_HandleTypeDef*  hspi_bno  = &hspi1;
 
 /* USER CODE END PV */
 
@@ -66,13 +67,17 @@ static void MX_SPI1_Init(void);
 int16_t pulse_count;
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
-  GPIO_PinState A_status = HAL_GPIO_ReadPin(ROT_A_GPIO_Port, ROT_A_Pin);
-  GPIO_PinState B_status = HAL_GPIO_ReadPin(ROT_B_GPIO_Port, ROT_B_Pin);
+//  GPIO_PinState A_status = HAL_GPIO_ReadPin(ROT_A_GPIO_Port, ROT_A_Pin);
+//  GPIO_PinState B_status = HAL_GPIO_ReadPin(ROT_B_GPIO_Port, ROT_B_Pin);
+//
+//  if ((GPIO_Pin == ROT_A_Pin) == (A_status == B_status))
+//	pulse_count++;
+//  else
+//    pulse_count--;
 
-  if ((GPIO_Pin == ROT_A_Pin) == (A_status == B_status))
-	pulse_count++;
-  else
-    pulse_count--;
+  if (GPIO_Pin == BNO_IRQ_Pin) {
+    BNO_IRQcallback();
+  }
 }
 
 
@@ -169,13 +174,21 @@ int main(void)
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
 
-  // Start the nRF24
-  setupNRF24();
+
+//  // Start the nRF24
+//  setupNRF24();
 
   // Stop motor, then start PWM generation
   setMotorOutput(0.0f);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
 
+
+  // Start the BNO085
+  BNO_startup();
+
+
+  // Then start the rotation vector output
+  BNO_startRotationVector();
 
   /* USER CODE END 2 */
 
@@ -187,36 +200,35 @@ int main(void)
 
   while (1)
   {
-    uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
-//    uint8_t status = readNRF24status();
-
-    if ((fifo_status & 0b00000001) == 0) {
-      // Set new acknowledge payload
-      ++ack_number;
-      payload[0] = (pulse_count & 0xff00) >> 8;
-      payload[1] = pulse_count & 0x00ff;
-      payload[2] = (ack_number & 0xff00) >> 8;
-      payload[3] = ack_number & 0x00ff;
-      writeNRF24ackPayload((uint8_t*)payload, 8, 0);
-
-      // Reset pulse_count to get a relative measurement
-      pulse_count = 0;
-
-      // Read buffer to clear it
-      uint8_t recv_buf[32];
-      readNRF24payload(recv_buf, 8);
-
-      // Recover value from buffer
-      last_recv = recv_buf[0] * 0x100 + recv_buf[1];
-
-      setMotorOutput(last_recv / 3000.0f);
-
-      // Clear RX_DR interrupt
-      writeNRF24register(N24_STATUS, 0b01000000);
-
-
-      HAL_GPIO_TogglePin(BLINK_GPIO_Port, BLINK_Pin);
-    }
+//    uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
+//
+//    if ((fifo_status & 0b00000001) == 0) {
+//      // Set new acknowledge payload
+//      ++ack_number;
+//      payload[0] = (pulse_count & 0xff00) >> 8;
+//      payload[1] = pulse_count & 0x00ff;
+//      payload[2] = (ack_number & 0xff00) >> 8;
+//      payload[3] = ack_number & 0x00ff;
+//      writeNRF24ackPayload((uint8_t*)payload, 8, 0);
+//
+//      // Reset pulse_count to get a relative measurement
+//      pulse_count = 0;
+//
+//      // Read buffer to clear it
+//      uint8_t recv_buf[32];
+//      readNRF24payload(recv_buf, 8);
+//
+//      // Recover value from buffer
+//      last_recv = recv_buf[0] * 0x100 + recv_buf[1];
+//
+//      setMotorOutput(last_recv / 3000.0f);
+//
+//      // Clear RX_DR interrupt
+//      writeNRF24register(N24_STATUS, 0b01000000);
+//
+//
+//      HAL_GPIO_TogglePin(BLINK_GPIO_Port, BLINK_Pin);
+//    }
 
     HAL_Delay(2);
     /* USER CODE END WHILE */
@@ -390,10 +402,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, BNO_WAKE_Pin|BNO_CSN_Pin|NRF_CSN_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(NRF_CSN_GPIO_Port, NRF_CSN_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOA, BNO_RESET_Pin|NRF_CE_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, MOT_bwd_Pin|MOT_fwd_Pin, GPIO_PIN_RESET);
@@ -411,12 +423,20 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : NRF_CE_Pin NRF_CSN_Pin */
-  GPIO_InitStruct.Pin = NRF_CE_Pin|NRF_CSN_Pin;
+  /*Configure GPIO pins : BNO_WAKE_Pin BNO_RESET_Pin BNO_CSN_Pin NRF_CE_Pin
+                           NRF_CSN_Pin */
+  GPIO_InitStruct.Pin = BNO_WAKE_Pin|BNO_RESET_Pin|BNO_CSN_Pin|NRF_CE_Pin
+                          |NRF_CSN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : BNO_IRQ_Pin */
+  GPIO_InitStruct.Pin = BNO_IRQ_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(BNO_IRQ_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : MOT_bwd_Pin MOT_fwd_Pin */
   GPIO_InitStruct.Pin = MOT_bwd_Pin|MOT_fwd_Pin;
@@ -426,6 +446,9 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
