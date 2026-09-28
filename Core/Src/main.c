@@ -92,8 +92,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
 
     if ((fifo_status & 0b00000001) == 0) {
-      // TODO REMOVE THESE RESET TOGGLES!
-      HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_SET);
       // Set new acknowledge payload
       ++ack_number;
       payload[0] = (pulse_count & 0xff00) >> 8;
@@ -116,8 +114,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
 
       // Clear RX_DR interrupt
       writeNRF24register(N24_STATUS, 0b01000000);
-
-      HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_RESET);
     }
   }
 }
@@ -221,20 +217,19 @@ int main(void)
   // Start the nRF24
   setupNRF24();
 
+  // Start the BNO085
+  BNO_startup();
+
   // Stop motor, then start PWM generation
   setMotorOutput(0.0f);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
 
+
   // Start checking the nRF24 after setting everything else up
   HAL_TIM_Base_Start_IT(&htim5);
 
-
-  // Start the BNO085
-//  BNO_startup();
-
-
   // Then start the rotation vector output
-//  BNO_startRotationVector();
+  BNO_startRotationVector();
 
   /* USER CODE END 2 */
 
@@ -492,7 +487,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : BNO_IRQ_Pin */
   GPIO_InitStruct.Pin = BNO_IRQ_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(BNO_IRQ_GPIO_Port, &GPIO_InitStruct);
 
