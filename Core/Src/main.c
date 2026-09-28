@@ -92,6 +92,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
 
     if ((fifo_status & 0b00000001) == 0) {
+      // TODO REMOVE THESE RESET TOGGLES!
+      HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_SET);
       // Set new acknowledge payload
       ++ack_number;
       payload[0] = (pulse_count & 0xff00) >> 8;
@@ -108,15 +110,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
       readNRF24payload(recv_buf, 8);
 
       // Recover value from buffer
-      uint16_t last_recv = recv_buf[0] * 0x100 + recv_buf[1];
+      int16_t last_recv = recv_buf[0] * 0x100 + recv_buf[1];
 
       setMotorOutput(last_recv / 3000.0f);
 
       // Clear RX_DR interrupt
       writeNRF24register(N24_STATUS, 0b01000000);
 
-
-      HAL_GPIO_TogglePin(BLINK_GPIO_Port, BLINK_Pin);
+      HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_RESET);
     }
   }
 }
@@ -161,7 +162,7 @@ void setupNRF24() {
   writeNRF24register(N24_EN_RXADDR, 0b00000001); // Only enable reception on pipe 0
   writeNRF24register(N24_SETUP_AW,  0b00000011); // Set 5 byte address width
   writeNRF24register(N24_SETUP_RETR,0b00010101); // 5 retransmissions, each spaced 500us apart
-  writeNRF24register(N24_RF_CH,     0b00000010); // Set frequency channel to 2... this is the datasheet's default, so I'll trust it for now
+  writeNRF24register(N24_RF_CH,     0b00010010); // Set frequency channel to 2... this is the datasheet's default, so I'll trust it for now
   writeNRF24register(N24_RF_SETUP,  0b00000111); // 1Mbps tx rate, 0dBm tx gain, setup LNA gain (idk what that means)
 
   // Setup TX and RX addresses.
@@ -413,7 +414,7 @@ static void MX_TIM5_Init(void)
   htim5.Instance = TIM5;
   htim5.Init.Prescaler = 999;
   htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim5.Init.Period = 999;
+  htim5.Init.Period = 499;
   htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
