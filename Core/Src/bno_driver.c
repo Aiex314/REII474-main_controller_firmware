@@ -457,6 +457,8 @@ void BNO_IRQcallback() {
   uint8_t recv_len, recv_channel;
   uint8_t spi_buf[64];
 
+  setSPIconfig();
+
   if (BNO_status != BNO_CONFIGURED) return;
 
   // Receive a packet every time IRQ goes low

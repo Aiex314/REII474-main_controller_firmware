@@ -19,9 +19,21 @@ extern SPI_HandleTypeDef hspi1;
 
 uint8_t spi_out_data[33]; // Maximum SPI frame size is 1B + 32B for W_TX_COMMAND with 32B of data
 
+// For cooperation with BNO085
+static void setSPIconfig() {
+  if (hspi1.Init.CLKPhase != SPI_PHASE_1EDGE || hspi1.Init.CLKPolarity != SPI_POLARITY_LOW) {
+    HAL_SPI_DeInit(&hspi1);
+    hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+    hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+    HAL_SPI_Init(&hspi1);
+  }
+}
+
 
 // Single byte register setting and reading functions
 void writeNRF24register(uint8_t index, uint8_t value) {
+  setSPIconfig();
+
   spi_out_data[0] = 0b00100000 | (0b00011111 & index);
   spi_out_data[1] = value;
 
@@ -31,6 +43,8 @@ void writeNRF24register(uint8_t index, uint8_t value) {
 }
 
 uint8_t readNRF24register(uint8_t index) {
+  setSPIconfig();
+
   spi_out_data[0] = 0b00011111 & index;
 
   uint8_t reg_data = 0x00;
@@ -44,6 +58,8 @@ uint8_t readNRF24register(uint8_t index) {
 }
 
 uint8_t readNRF24status() {
+  setSPIconfig();
+
   uint8_t status_reg = 0x00;
 
   spi_out_data[0] = N24_NOP;
@@ -59,6 +75,8 @@ uint8_t readNRF24status() {
 // Address setting functions. These don't check against the configured
 // address width, although I'm not sure how you would...
 void setNRF24TXaddr(const uint8_t* addr, uint8_t addr_len) {
+  setSPIconfig();
+
   spi_out_data[0] = 0b00100000 | N24_TX_ADDR;  // Write to TX_ADDR register
   memcpy(&spi_out_data[1], addr, addr_len*sizeof(uint8_t));
 
@@ -68,6 +86,8 @@ void setNRF24TXaddr(const uint8_t* addr, uint8_t addr_len) {
 }
 
 void setNRF24RXaddr(const uint8_t* addr, uint8_t addr_len, uint8_t pipe_no) {
+  setSPIconfig();
+
   if (pipe_no > 5) return; // If pipe index out of bounds, just fail silently
 
   spi_out_data[0] = 0b00100000 | (pipe_no + N24_RX_ADDR_P0);  // Write to RX_ADDR register corresponding to the pipe
@@ -81,6 +101,8 @@ void setNRF24RXaddr(const uint8_t* addr, uint8_t addr_len, uint8_t pipe_no) {
 
 // Payload transmission and reception functions 
 void sendNRF24payload(const uint8_t* data, uint8_t data_len) {
+  setSPIconfig();
+
   spi_out_data[0] = N24_W_TX_PAYLOAD; // Write payload command
   memcpy(&spi_out_data[1], data, data_len);
   
@@ -94,6 +116,8 @@ void sendNRF24payload(const uint8_t* data, uint8_t data_len) {
 }
 
 void readNRF24payload(uint8_t* buffer, uint8_t data_len) {
+  setSPIconfig();
+
   // Is it possible to somehow infer the data_len other than using R_RX_PL_WID?
   // The payload width field isn't necessarily set, so this would be unreliable anyways...
 
@@ -106,6 +130,8 @@ void readNRF24payload(uint8_t* buffer, uint8_t data_len) {
 }
 
 void writeNRF24ackPayload(const uint8_t* data, uint8_t data_len, uint8_t pipe_no) {
+  setSPIconfig();
+
   if (pipe_no > 5) return;
 
   spi_out_data[0] = N24_W_ACK_PAYLOAD + pipe_no;
@@ -119,6 +145,8 @@ void writeNRF24ackPayload(const uint8_t* data, uint8_t data_len, uint8_t pipe_no
 
 // Miscellaneous things...
 void toggleNRF24extraFeatures() {
+  setSPIconfig();
+
   spi_out_data[0] = N24_ACTIVATE; // ACTIVATE command
   spi_out_data[1] = 0x73;
 
@@ -128,6 +156,8 @@ void toggleNRF24extraFeatures() {
 }
 
 void flushNRF24buffers() {
+  setSPIconfig();
+
   spi_out_data[0] = N24_FLUSH_RX;
 
   HAL_GPIO_WritePin(NRF_CSN_GPIO_Port, NRF_CSN_Pin, GPIO_PIN_RESET);

@@ -45,6 +45,7 @@
 SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim5;
 
 /* USER CODE BEGIN PV */
 SPI_HandleTypeDef*  hspi_bno  = &hspi1;
@@ -56,15 +57,16 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_TIM5_Init(void);
 /* USER CODE BEGIN PFP */
-
+void setMotorOutput(float);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
 // TODO: Still need to properly test the rotary encoder!
-int16_t pulse_count;
+int16_t pulse_count = 0;
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 //  GPIO_PinState A_status = HAL_GPIO_ReadPin(ROT_A_GPIO_Port, ROT_A_Pin);
@@ -77,6 +79,45 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 
   if (GPIO_Pin == BNO_IRQ_Pin) {
     BNO_IRQcallback();
+  }
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
+  static uint16_t ack_number = 0;
+  uint8_t payload[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+  HAL_GPIO_TogglePin(BLINK_GPIO_Port, BLINK_Pin);
+
+  if (htim == &htim5) {
+    uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
+
+    if ((fifo_status & 0b00000001) == 0) {
+      // Set new acknowledge payload
+      ++ack_number;
+      payload[0] = (pulse_count & 0xff00) >> 8;
+      payload[1] = pulse_count & 0x00ff;
+      payload[2] = (ack_number & 0xff00) >> 8;
+      payload[3] = ack_number & 0x00ff;
+      writeNRF24ackPayload((uint8_t*)payload, 8, 0);
+
+      // Reset pulse_count to get a relative measurement
+      pulse_count = 0;
+
+      // Read buffer to clear it
+      uint8_t recv_buf[32];
+      readNRF24payload(recv_buf, 8);
+
+      // Recover value from buffer
+      uint16_t last_recv = recv_buf[0] * 0x100 + recv_buf[1];
+
+      setMotorOutput(last_recv / 3000.0f);
+
+      // Clear RX_DR interrupt
+      writeNRF24register(N24_STATUS, 0b01000000);
+
+
+      HAL_GPIO_TogglePin(BLINK_GPIO_Port, BLINK_Pin);
+    }
   }
 }
 
@@ -172,65 +213,36 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM4_Init();
   MX_SPI1_Init();
+  MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
 
 
-//  // Start the nRF24
-//  setupNRF24();
+  // Start the nRF24
+  setupNRF24();
 
   // Stop motor, then start PWM generation
   setMotorOutput(0.0f);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
 
+  // Start checking the nRF24 after setting everything else up
+  HAL_TIM_Base_Start_IT(&htim5);
+
 
   // Start the BNO085
-  BNO_startup();
+//  BNO_startup();
 
 
   // Then start the rotation vector output
-  BNO_startRotationVector();
+//  BNO_startRotationVector();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  int16_t last_recv = 0.0f;
-  uint16_t ack_number = 0;
-  uint8_t payload[4];
 
   while (1)
   {
-//    uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
-//
-//    if ((fifo_status & 0b00000001) == 0) {
-//      // Set new acknowledge payload
-//      ++ack_number;
-//      payload[0] = (pulse_count & 0xff00) >> 8;
-//      payload[1] = pulse_count & 0x00ff;
-//      payload[2] = (ack_number & 0xff00) >> 8;
-//      payload[3] = ack_number & 0x00ff;
-//      writeNRF24ackPayload((uint8_t*)payload, 8, 0);
-//
-//      // Reset pulse_count to get a relative measurement
-//      pulse_count = 0;
-//
-//      // Read buffer to clear it
-//      uint8_t recv_buf[32];
-//      readNRF24payload(recv_buf, 8);
-//
-//      // Recover value from buffer
-//      last_recv = recv_buf[0] * 0x100 + recv_buf[1];
-//
-//      setMotorOutput(last_recv / 3000.0f);
-//
-//      // Clear RX_DR interrupt
-//      writeNRF24register(N24_STATUS, 0b01000000);
-//
-//
-//      HAL_GPIO_TogglePin(BLINK_GPIO_Port, BLINK_Pin);
-//    }
 
-    HAL_Delay(2);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -377,6 +389,51 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 2 */
   HAL_TIM_MspPostInit(&htim4);
+
+}
+
+/**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 999;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 999;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
 
 }
 
