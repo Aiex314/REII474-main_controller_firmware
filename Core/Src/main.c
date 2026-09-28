@@ -24,6 +24,7 @@
 #include <math.h>
 
 #include "nRF24_driver.h"
+#include "bno_driver.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -68,6 +69,12 @@ void setMotorOutput(float);
 // TODO: Still need to properly test the rotary encoder!
 int16_t pulse_count = 0;
 
+
+// YPR testing code
+float y, p, r;
+uint8_t newAngles;
+uint8_t spiBusy = 0;
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 //  GPIO_PinState A_status = HAL_GPIO_ReadPin(ROT_A_GPIO_Port, ROT_A_Pin);
 //  GPIO_PinState B_status = HAL_GPIO_ReadPin(ROT_B_GPIO_Port, ROT_B_Pin);
@@ -78,15 +85,25 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 //    pulse_count--;
 
   if (GPIO_Pin == BNO_IRQ_Pin) {
+    spiBusy = 1;
     BNO_IRQcallback();
+    spiBusy = 0;
+    BNO_getYPR(&y, &p, &r);
   }
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
   static uint16_t ack_number = 0;
-  uint8_t payload[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  uint8_t payload[16];
 
-  HAL_GPIO_TogglePin(BLINK_GPIO_Port, BLINK_Pin);
+  if (spiBusy == 1) return;
+
+  // Clear payload
+  memset(payload, 0, 16);
+
+  uint8_t* y_bytes = (uint8_t*)(&y);
+  uint8_t* p_bytes = (uint8_t*)(&p);
+  uint8_t* r_bytes = (uint8_t*)(&r);
 
   if (htim == &htim5) {
     uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
@@ -94,26 +111,53 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     if ((fifo_status & 0b00000001) == 0) {
       // Set new acknowledge payload
       ++ack_number;
-      payload[0] = (pulse_count & 0xff00) >> 8;
-      payload[1] = pulse_count & 0x00ff;
-      payload[2] = (ack_number & 0xff00) >> 8;
-      payload[3] = ack_number & 0x00ff;
-      writeNRF24ackPayload((uint8_t*)payload, 8, 0);
+      payload[0] = (ack_number & 0xff00) >> 8;
+      payload[1] = ack_number & 0x00ff;
+      payload[2] = (pulse_count & 0xff00) >> 8;
+      payload[3] = pulse_count & 0x00ff;
+      payload[4] = p_bytes[0];
+      payload[5] = p_bytes[1];
+      payload[6] = p_bytes[2];
+      payload[7] = p_bytes[3];
+      payload[8] = r_bytes[0];
+      payload[9] = r_bytes[1];
+      payload[10] = r_bytes[2];
+      payload[11] = r_bytes[3];
+      writeNRF24ackPayload((uint8_t*)payload, 12, 0);
 
       // Reset pulse_count to get a relative measurement
       pulse_count = 0;
 
       // Read buffer to clear it
       uint8_t recv_buf[32];
-      readNRF24payload(recv_buf, 8);
+      readNRF24payload(recv_buf, 12);
 
-      // Recover value from buffer
-      int16_t last_recv = recv_buf[0] * 0x100 + recv_buf[1];
+//      // Recover value from buffer
+//      int16_t last_recv = recv_buf[0] * 0x100 + recv_buf[1];
 
-      setMotorOutput(last_recv / 3000.0f);
+//      setMotorOutput(last_recv / 3000.0f);
 
       // Clear RX_DR interrupt
       writeNRF24register(N24_STATUS, 0b01000000);
+    }
+
+
+
+    // Update motor output
+    if (r < 0.0 && p < 10.0 && p > -10.0) {
+      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
+
+      float ctrl_value = -(p-0.0)/4.0;
+
+      if (ctrl_value > 0.4) ctrl_value = 0.4;
+      else if (ctrl_value < -0.4) ctrl_value = -0.4;
+      setMotorOutput(ctrl_value);
+    }
+    else {
+      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_SET);
+
+      // ugh. TODO make this better.
+      setMotorOutput(0.9*TIM4->CCR2/5000.0f);
     }
   }
 }
