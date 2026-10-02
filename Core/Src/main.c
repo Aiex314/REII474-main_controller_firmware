@@ -109,8 +109,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     uint8_t payload[16];
     uint8_t rx_buf[32];
 
-//    if (spiBusy == 1) goto no_comms;
-
     // Clear payload
     memset(payload, 0, 16);
 
@@ -158,8 +156,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
 
     // Update motor output
     if (rwp_mode == 1 && (y < 0.0 && p < 10.0 && p > -10.0)) {
-      static float idiff = 0.0f;
-
       HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
 
       static float prev_theta;
