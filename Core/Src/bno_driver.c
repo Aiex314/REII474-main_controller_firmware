@@ -5,6 +5,14 @@
  *      Author: hapro
  */
 
+
+/* I apologise to whomever has to read this code.
+ * This driver devolved into a cesspool of hotfixes
+ * very quickly, and I never got around to fixing it
+ */
+
+
+
 #include "bno_driver.h"
 
 
@@ -17,6 +25,7 @@ extern SPI_HandleTypeDef* hspi_bno;
 // 2 - Normal channel (sensor data)
 // 3, 4, 5 - I don't know, and I don't care...
 static uint8_t channel_seq_nums[6] = {0, 0, 0, 0, 0, 0};
+static uint8_t cmdSequenceNum = 0;
 
 static BNO_STATE BNO_status = BNO_UNINITIALIZED;
 
@@ -167,13 +176,48 @@ void BNO_startup() {
   }
 
 
+
+  // Transmit a sensor reorientation request
+  uint8_t REORIENT_SENSOR[] = {
+    0xf2, cmdSequenceNum++,
+    0x03, 0x02,
+    0b00000000, 0b10100000, // x
+    0b00000000, 0b00100000, // y
+    0b00000000, 0b10100000, // z
+    0b00000000, 0b00100000  // w
+  };
+
   // WAKE UP
   HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_RESET);
   waitForIRQ(GPIO_PIN_RESET);
   HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_SET);
 
+  // Send the reorientation request
+  waitTransmitFrame(GPIO_PIN_RESET, REORIENT_SENSOR, 12, 0x02);
 
 
+
+//  // Transmit a sensor reorientation request
+//  uint8_t SENSOR_ORIENTATION[] = {
+//    0b00000000, 0b00000000, 0b00000000, 0b00000000, //  0.5 as 32-bit fixed point number
+//    0b00000000, 0b00000000, 0b00000000, 0b01000000, // -0.5 as 32-bit fixed point number
+//    0b00000000, 0b00000000, 0b00000000, 0b00000000, // This defines a quaternion corresponding
+//    0b00000000, 0b00000000, 0b00000000, 0b00000000, // to the correct reorientation
+//  };
+//
+//
+//  uint8_t resp = BNO_writeFRSrecord(0x2d3e, 0x00, 0x04, &SENSOR_ORIENTATION[0]);
+//  resp = BNO_writeFRSrecord(0x2d3e, 0x02, 0x02, &SENSOR_ORIENTATION[8]);
+//
+//  memset(SENSOR_ORIENTATION, 0xff, 16);
+//
+//  BNO_readFRSrecord(0x2D3E, 0x00, 0x04, SENSOR_ORIENTATION);
+
+
+  // WAKE UP
+  HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_RESET);
+  waitForIRQ(GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_SET);
 
   // Transmit a product ID request
   uint8_t REQ_PROD_ID[] =
@@ -189,6 +233,8 @@ void BNO_startup() {
 
   // Receive the other half of the fucking response. Cause it's just in two pieces for no reason
   waitReceiveFrame(GPIO_PIN_RESET, spi_buf, 64, &recv_channel);
+
+
 
   // At this point, the BNO should be initialized and asleep.
   BNO_status = BNO_INIT_SLEEP;
@@ -290,6 +336,7 @@ uint8_t BNO_readFRSrecord(uint16_t record_num, uint16_t read_offset, uint16_t re
   return 0;
 }
 
+
 uint8_t BNO_writeFRSrecord(uint16_t record_num, uint16_t write_offset, uint16_t write_len, const uint8_t* out_buf) {
   uint8_t recv_buf[4];
   // See page 39 of SH-2 datasheet for FRS write response format & length
@@ -325,7 +372,8 @@ uint8_t BNO_writeFRSrecord(uint16_t record_num, uint16_t write_offset, uint16_t 
     waitReceiveFrame(GPIO_PIN_RESET, recv_buf, 4, &recv_channel);
   } while (recv_channel != 0x02 && recv_buf[0] != 0xF5);
 
-  if (recv_buf[1] != 0x04) return recv_buf[1];
+  if (recv_buf[1] != 0x04)
+    return recv_buf[1];
 
 
   // Write the FRS record
@@ -346,7 +394,7 @@ uint8_t BNO_writeFRSrecord(uint16_t record_num, uint16_t write_offset, uint16_t 
 
   uint16_t cur_offset;
   uint16_t cur_written = 0;
-  uint16_t rem_length = write_len;
+  int16_t rem_length = write_len;
 
   while (rem_length > 0x00) {
     cur_offset = write_offset + cur_written;
@@ -374,7 +422,8 @@ uint8_t BNO_writeFRSrecord(uint16_t record_num, uint16_t write_offset, uint16_t 
       waitReceiveFrame(GPIO_PIN_RESET, recv_buf, 4, &recv_channel);
     } while (recv_channel != 0x02 && recv_buf[0] != 0xF5);
 
-    if (recv_buf[1] != 0x00) return recv_buf[1];
+    if (recv_buf[1] != 0x00)
+      return recv_buf[1];
 
     // And a record valid response...
     do {
@@ -382,7 +431,8 @@ uint8_t BNO_writeFRSrecord(uint16_t record_num, uint16_t write_offset, uint16_t 
       waitReceiveFrame(GPIO_PIN_RESET, recv_buf, 4, &recv_channel);
     } while (recv_channel != 0x02 && recv_buf[0] != 0xF5);
 
-    if (recv_buf[1] != 0x08) return recv_buf[1];
+    if (recv_buf[1] != 0x08)
+      return recv_buf[1];
 
     // AND a write complete..........................
     do {
@@ -390,7 +440,8 @@ uint8_t BNO_writeFRSrecord(uint16_t record_num, uint16_t write_offset, uint16_t 
       waitReceiveFrame(GPIO_PIN_RESET, recv_buf, 4, &recv_channel);
     } while (recv_channel != 0x02 && recv_buf[0] != 0xF5);
 
-    if (recv_buf[1] != 0x03) return recv_buf[1];
+    if (recv_buf[1] != 0x03)
+      return recv_buf[1];
   }
 
   return 0;
@@ -398,8 +449,6 @@ uint8_t BNO_writeFRSrecord(uint16_t record_num, uint16_t write_offset, uint16_t 
 
 
 uint8_t BNO_setCalibration(CALIBRATION_FLAG flags) {
-  static uint8_t sequenceNum = 0;
-
   uint8_t recv_buf[16];
 
   uint8_t SET_CAL[] =
@@ -412,7 +461,7 @@ uint8_t BNO_setCalibration(CALIBRATION_FLAG flags) {
   		0x00, 0x00
   };
 
-  SET_CAL[1] = sequenceNum++;
+  SET_CAL[1] = cmdSequenceNum++;
 
   SET_CAL[3] = ((flags & ACCEL_ENABLE) != 0) ? 1 : 0;
   SET_CAL[4] = ((flags & GYRO_ENABLE)  != 0) ? 1 : 0;

@@ -51,6 +51,8 @@ TIM_HandleTypeDef htim5;
 /* USER CODE BEGIN PV */
 SPI_HandleTypeDef*  hspi_bno  = &hspi1;
 
+const float DEG_TO_RAD = 3.141592653/180.0;
+const float RAD_TO_DEG = 1/DEG_TO_RAD;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -155,38 +157,51 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
 
 
     // Update motor output
-    if (rwp_mode == 1 && (y < 0.0 && p < 10.0 && p > -10.0)) {
-      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
+    if (rwp_mode == 1) {
 
-      static float prev_theta;
-      static float theta = 999.00;
+      static float p_thp;
+      static float thp = 999.0;
 
-      prev_theta = theta;
-      theta      = p-2.3;
+      // Pendulum angle (radians)
+      p_thp = thp;
+      thp   = DEG_TO_RAD*(y-0.1);
+      if (thp == 999.0) p_thp = thp;
 
-      float dtheta = (theta - prev_theta) * 200.0;
+      // Pendulum velocity (rad/s)
+      float omp = (thp - p_thp) * 200.0;
 
+      // Reaction wheel velocity (rad/s)
       float alpha  = (2.0 * 3.14159265 * 200.0f / 1024.0f) * (float)pulse_count;
 
-      float ctrl_value = -(0.6*theta + 0.05*dtheta - 0.02 * alpha);
+      // If we're within 10 degrees of the setpoint, activate the linear controller
+      if (y < 10.0 && y > -10.0) {
+        float ctrl_value = -(0.6*thp + 0.05*omp - 0.02 * alpha);
+      }
+      // Otherwise, activate the swingup controller
+      else {
+        const float J_f = 0.0005825; // Reaction wheel moment of inertia as kg/m^2
+        const float J_p = 0.0256;    // Pendulum arm moment of inertia as kg/m^2
+        const float K_g = 1.2255;    // Potential energy constant
 
+        float KE_p = omp*omp*J_p/2.0;
+        float KE_f = alpha*alpha*J_f/2.0;
+        float PE_p = K_g * (1 - cos(thp));
+        float total_energy = KE_p + KE_f + PE_p;
+
+        float ctrl_value = total_energy * omp;
+      }
+
+      // Clip the control value
       if (ctrl_value > 0.7) ctrl_value = 0.7;
       else if (ctrl_value < -0.7) ctrl_value = -0.7;
+
       setMotorOutput(ctrl_value);
-
-      // Reset pulse_count to get a relative measurement
-      pulse_count = 0;
-    }
-    else if (rwp_mode == 1){
-      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_SET);
-
-      // ugh. TODO make this better.
-      setMotorOutput(0.9*TIM4->CCR2/5000.0f);
     }
     else {
       setMotorOutput(motor_output);
     }
-
+    // Reset pulse_count to get a relative measurement
+    pulse_count = 0;
   }
 }
 
