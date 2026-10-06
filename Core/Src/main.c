@@ -25,6 +25,8 @@
 
 #include "nRF24_driver.h"
 #include "bno_driver.h"
+
+#include "message_protocol.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -73,7 +75,7 @@ int16_t pulse_count = 0;
 
 
 // YPR testing code
-float y, p, r, v_f;
+float yaw, pitch, roll;
 uint8_t newAngles;
 uint8_t spiBusy = 0;
 
@@ -82,7 +84,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     spiBusy = 1;
     BNO_IRQcallback();
     spiBusy = 0;
-    BNO_getYPR(&y, &p, &r);
+    BNO_getYPR(&yaw, &pitch, &roll);
 
     return;
   }
@@ -102,80 +104,34 @@ uint8_t rwp_mode = 1;
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
   // 200Hz timer (for control and comms)
   if (htim == &htim5) {
-    // Calculate the flywheel velocity in the last 50ms
-    v_f = (400*3.14159265)/(2048.00)*pulse_count; // rad/s
+    // State variables, and previous angle
+    static float p_ap;
+    static float a_p, v_f, v_p;
 
     // Buffers and variables for comms
-    static uint16_t ack_number = 0;
+//    static uint16_t ack_number = 0;
     static float motor_output  = 0.0;
-    uint8_t payload[16];
+//    uint8_t payload[16];
     uint8_t rx_buf[32];
 
-    // Clear payload
-    memset(payload, 0, 16);
 
-    uint8_t* y_bytes = (uint8_t*)(&y);
-    uint8_t* p_bytes = (uint8_t*)(&p);
-    uint8_t* r_bytes = (uint8_t*)(&r);
+    /* ============== MOTOR CONTROL CODE ============= */
 
-    // If there's data available from the nRF24, get it!
-    uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
-
-    if ((fifo_status & 0b00000001) == 0) {
-      // Set new acknowledge payload
-      ++ack_number;
-      payload[0] = (ack_number & 0xff00) >> 8;
-      payload[1] =  ack_number & 0x00ff;
-      payload[2] = (pulse_count & 0xff00) >> 8;
-      payload[3] =  pulse_count & 0x00ff;
-      payload[4]  = p_bytes[0];
-      payload[5]  = p_bytes[1];
-      payload[6]  = p_bytes[2];
-      payload[7]  = p_bytes[3];
-      payload[8]  = r_bytes[0];
-      payload[9]  = r_bytes[1];
-      payload[10] = r_bytes[2];
-      payload[11] = r_bytes[3];
-      payload[12] = y_bytes[0];
-      payload[13] = y_bytes[1];
-      payload[14] = y_bytes[2];
-      payload[15] = y_bytes[3];
-      writeNRF24ackPayload((uint8_t*)payload, 16, 0);
-
-      // Read buffer to clear it
-      readNRF24payload(rx_buf, 8);
-
-      int16_t raw_value = rx_buf[0]*0x100 + rx_buf[1];
-      motor_output = raw_value/2048.0f;
-
-      rwp_mode  = rx_buf[2];
-
-      // Clear RX_DR interrupt
-      writeNRF24register(N24_STATUS, 0b01000000);
-    }
-
+    // Calculate the current state
+    v_f = (400*3.14159265)/(1024.00)*pulse_count; // rad/s
+    p_ap = a_p;
+    a_p   = DEG_TO_RAD*(yaw-0.1);
+    v_p   = (a_p - p_ap) * 200.0;
 
 
     // Update motor output
-    if (rwp_mode == 1) {
-
-      static float p_thp;
-      static float thp = 999.0;
-
-      // Pendulum angle (radians)
-      p_thp = thp;
-      thp   = DEG_TO_RAD*(y-0.1);
-      if (thp == 999.0) p_thp = thp;
-
-      // Pendulum velocity (rad/s)
-      float omp = (thp - p_thp) * 200.0;
-
-      // Reaction wheel velocity (rad/s)
-      float alpha  = (2.0 * 3.14159265 * 200.0f / 1024.0f) * (float)pulse_count;
+    if (rwp_mode == RWP_MODE_AUTO) {
+      // Motor control value
+      float ctrl_value = 0.0;
 
       // If we're within 10 degrees of the setpoint, activate the linear controller
-      if (y < 10.0 && y > -10.0) {
-        float ctrl_value = -(0.6*thp + 0.05*omp - 0.02 * alpha);
+      if (a_p < 10.0 && a_p > -10.0) {
+        ctrl_value = -(35*a_p + 2.8*v_p - 0.02*v_f);
       }
       // Otherwise, activate the swingup controller
       else {
@@ -183,12 +139,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         const float J_p = 0.0256;    // Pendulum arm moment of inertia as kg/m^2
         const float K_g = 1.2255;    // Potential energy constant
 
-        float KE_p = omp*omp*J_p/2.0;
-        float KE_f = alpha*alpha*J_f/2.0;
-        float PE_p = K_g * (1 - cos(thp));
+        float KE_p = v_p*v_p*J_p/2.0;
+        float KE_f = v_f*v_f*J_f/2.0;
+        float PE_p = K_g * (cos(a_p)-1);
         float total_energy = KE_p + KE_f + PE_p;
 
-        float ctrl_value = total_energy * omp;
+        ctrl_value = -total_energy * v_f * 500;
       }
 
       // Clip the control value
@@ -198,8 +154,39 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
       setMotorOutput(ctrl_value);
     }
     else {
+      // Set motor output to user input if in manual mode
       setMotorOutput(motor_output);
     }
+
+
+    /* ============== COMMUNICATIONS CODE ============= */
+
+    // If there's data available from the nRF24, get it!
+    uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
+    if ((fifo_status & 0b00000001) == 0) {
+      // Clear, rebuild and set new acknowledge payload
+      RWP_MESSAGE_FRAME rwp_message;
+      memset(rwp_message.bytes, 0x00, 32);
+      rwp_message.sensor_data.yaw = yaw;
+      rwp_message.sensor_data.pitch = pitch;
+      rwp_message.sensor_data.roll = roll;
+      rwp_message.sensor_data.rotary_encoder = pulse_count;
+      rwp_message.sensor_data.data_type = SENSOR_DATA;
+      rwp_message.sensor_data.cur_mode = rwp_mode;
+      writeNRF24ackPayload(rwp_message.bytes, 16, 0);
+
+      // Read the received packet into a frame get its contents
+      RMT_MESSAGE_FRAME rmt_message;
+      readNRF24payload(rmt_message.bytes, 16);
+      int16_t raw_value = rmt_message.control_msg.pot_value;
+      motor_output = raw_value/2048.0f;
+      // and update the mode based on received packet
+      rwp_mode  = rmt_message.control_msg.req_mode;
+
+      // Clear RX_DR interrupt
+      writeNRF24register(N24_STATUS, 0b01000000);
+    }
+
     // Reset pulse_count to get a relative measurement
     pulse_count = 0;
   }

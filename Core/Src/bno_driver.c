@@ -130,9 +130,11 @@ void BNO_startup() {
   setSPIconfig();
 
 
+
   // Still need to make this thing non-blocking....
   BNO_status = BNO_UNINITIALIZED;
 
+  // Reset the module
   HAL_GPIO_WritePin(BNO_RESET_GPIO_Port, BNO_RESET_Pin, GPIO_PIN_RESET);
   HAL_Delay(1);
   HAL_GPIO_WritePin(BNO_RESET_GPIO_Port, BNO_RESET_Pin, GPIO_PIN_SET);
@@ -195,23 +197,6 @@ void BNO_startup() {
   // Send the reorientation request
   waitTransmitFrame(GPIO_PIN_RESET, REORIENT_SENSOR, 12, 0x02);
 
-
-
-//  // Transmit a sensor reorientation request
-//  uint8_t SENSOR_ORIENTATION[] = {
-//    0b00000000, 0b00000000, 0b00000000, 0b00000000, //  0.5 as 32-bit fixed point number
-//    0b00000000, 0b00000000, 0b00000000, 0b01000000, // -0.5 as 32-bit fixed point number
-//    0b00000000, 0b00000000, 0b00000000, 0b00000000, // This defines a quaternion corresponding
-//    0b00000000, 0b00000000, 0b00000000, 0b00000000, // to the correct reorientation
-//  };
-//
-//
-//  uint8_t resp = BNO_writeFRSrecord(0x2d3e, 0x00, 0x04, &SENSOR_ORIENTATION[0]);
-//  resp = BNO_writeFRSrecord(0x2d3e, 0x02, 0x02, &SENSOR_ORIENTATION[8]);
-//
-//  memset(SENSOR_ORIENTATION, 0xff, 16);
-//
-//  BNO_readFRSrecord(0x2D3E, 0x00, 0x04, SENSOR_ORIENTATION);
 
 
   // WAKE UP
