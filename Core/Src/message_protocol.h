@@ -33,7 +33,6 @@ typedef struct {
   int16_t rotary_encoder;   // + 2B     = 4B
   float yaw, roll, pitch;   // + 4B * 3 = 16B
   uint8_t _pad[16];         // + 16B    = 32B
-
 } RWP_SENSOR_DATA;
 
 typedef struct {

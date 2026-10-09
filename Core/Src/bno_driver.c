@@ -486,6 +486,7 @@ uint8_t BNO_setCalibration(CALIBRATION_FLAG flags) {
 static float curYaw;
 static float curPitch;
 static float curRoll;
+static float curAccuracy;
 
 void BNO_IRQcallback() {
   uint8_t recv_len, recv_channel;
@@ -506,9 +507,11 @@ void BNO_IRQcallback() {
     float k = (int16_t)(spi_buf[13] + spi_buf[14] * 256)/16384.0f;
     float r = (int16_t)(spi_buf[15] + spi_buf[16] * 256)/16384.0f;
 
-    curYaw   = RAD_TO_DEG * atan2f(2*(r*i + j*k), 1 - 2*(i*i + j*j));
-    curPitch = RAD_TO_DEG * asinf(2*(r*j - i*k));
-    curRoll  = RAD_TO_DEG * atan2f(2*(r*k + i*j), 1 - 2*(j*j + k*k));
+    curYaw   = atan2f(2*(r*i + j*k), 1 - 2*(i*i + j*j));
+    curPitch = asinf(2*(r*j - i*k));
+    curRoll  = atan2f(2*(r*k + i*j), 1 - 2*(j*j + k*k));
+
+    curAccuracy = (float)(spi_buf[17] + spi_buf[18] * 256)/4096.0;
   }
 }
 
@@ -517,4 +520,8 @@ void BNO_getYPR(float* y, float* p, float* r) {
   *y = curYaw;
   *p = curPitch;
   *r = curRoll;
+}
+
+void BNO_getAccuracy(float* acc) {
+  *acc = curAccuracy;
 }

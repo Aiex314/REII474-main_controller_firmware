@@ -25,8 +25,11 @@
 
 #include "nRF24_driver.h"
 #include "bno_driver.h"
+#include "motor_controller.h"
 
 #include "message_protocol.h"
+
+#include "lookup_tables.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,8 +56,30 @@ TIM_HandleTypeDef htim5;
 /* USER CODE BEGIN PV */
 SPI_HandleTypeDef*  hspi_bno  = &hspi1;
 
-const float DEG_TO_RAD = 3.141592653/180.0;
-const float RAD_TO_DEG = 1/DEG_TO_RAD;
+// ======================== CONSTANTS =======================
+// Conversion constants
+#define PI 3.14159265358979323
+const float DEG_TO_RAD = PI/180.0;
+const float RAD_TO_DEG = 180.0/PI;
+// Maximum angle to activate linear controller in
+const float ANGLE_LIM  = 10.0*DEG_TO_RAD;
+// Linear region offset (radians)
+const float LINEAR_OFFSET = 3.8*DEG_TO_RAD;
+
+
+#define nA4  440.00
+#define nB4  493.88
+#define nC4  523.25
+#define nD4  587.33
+#define nE4  659.26
+#define nF4  698.46
+#define nG4  783.99
+#define nAs4 466.16
+#define nCs4 554.37
+#define nDs4 622.25
+#define nFs4 739.99
+#define nGs4 830.61
+#define nA5  880.00
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,21 +95,53 @@ void setMotorOutput(float);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-// TODO: Still need to properly test the rotary encoder!
+
+// Raw outputs of IMU
+float yaw, yaw_raw;
+float dyaw, dyaw_raw, dyaw_smooth;
+float pitch, roll;
+float accuracy;
+// Rotary encoder output
 int16_t pulse_count = 0;
-
-
-// YPR testing code
-float yaw, pitch, roll;
-uint8_t newAngles;
-uint8_t spiBusy = 0;
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   if (GPIO_Pin == BNO_IRQ_Pin) {
-    spiBusy = 1;
+    float yaw_prev = yaw;
+    float yaw_raw_prev = yaw_raw;
+
     BNO_IRQcallback();
-    spiBusy = 0;
     BNO_getYPR(&yaw, &pitch, &roll);
+    BNO_getAccuracy(&accuracy);
+
+    // Correct for nonlinearity.....
+    yaw_raw = yaw;
+    yaw = motorLinearizationLookup(yaw);
+
+    // Calculate raw dyaw for linear region
+    dyaw_raw = (yaw_raw_prev - yaw_prev)*100.0;
+
+    // Yes, this is sketch.
+    // The angle output runs from -pi to pi radians. 0 radians
+    // corresponds to the upright position, and pi/-pi is the
+    // downwards position. Due to this, the angle output is dis-
+    // continuous when the pendulum points exactly downwards.
+    //
+    // To fix this, I check how big the calculated angular velocity
+    // is, and if it exceeds pi radians per timestep (100 radians/s)
+    // then we assume that the zero point was crossed and subtract 2*pi
+    // from the result.
+
+    static float last_iir_output = 0.0;
+
+    if (yaw - yaw_prev > PI)
+      dyaw = (yaw - yaw_prev - 2*PI)*100.0;
+    else if (yaw - yaw_prev < -PI)
+      dyaw = (yaw - yaw_prev + 2*PI)*100.0;
+    else
+      dyaw = (yaw - yaw_prev)*100.0;
+
+    last_iir_output = 0.90 * last_iir_output + 0.10 * dyaw;
+    dyaw_smooth = last_iir_output;
 
     return;
   }
@@ -99,63 +156,70 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   }
 }
 
-uint8_t rwp_mode = 1;
+RWP_MODE rwp_mode = RWP_MODE_HALTED;
+RWP_DATA_KIND rwp_data = SENSOR_DATA;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
   // 200Hz timer (for control and comms)
   if (htim == &htim5) {
-    // State variables, and previous angle
-    static float p_ap;
-    static float a_p, v_f, v_p;
-
-    // Buffers and variables for comms
-//    static uint16_t ack_number = 0;
-    static float motor_output  = 0.0;
-//    uint8_t payload[16];
-    uint8_t rx_buf[32];
+    // Control variables
+    static double a_p, v_f, v_p;
+    static double KE_p, KE_f, PE_p;
+    static double motor_output  = 0.0;
 
 
     /* ============== MOTOR CONTROL CODE ============= */
 
-    // Calculate the current state
-    v_f = (400*3.14159265)/(1024.00)*pulse_count; // rad/s
-    p_ap = a_p;
-    a_p   = DEG_TO_RAD*(yaw-0.1);
-    v_p   = (a_p - p_ap) * 200.0;
+    // Calculate the current state (all rad or rad/s)
+    v_f  = (400*3.14159265)/(1024.00)*pulse_count;
+    a_p  = yaw;
+    v_p  = dyaw;
 
+    // Motor control value
+    float ctrl_value = 0.0;
+
+    // If we're within 10 degrees of the setpoint, activate the linear controller
+    if ((a_p+0.069 < ANGLE_LIM) && (a_p+0.069 > -ANGLE_LIM)) {
+      yaw_raw += 0.04;
+      ctrl_value = -(100*yaw_raw + 0*dyaw_raw - 0*v_f);
+    }
+    // Otherwise, activate the swingup controller
+    else {
+      const float J_f = 0.0005825; // Reaction wheel moment of inertia as kg/m^2
+//      const float J_p = 0.0256;    // Pendulum arm moment of inertia as kg/m^2
+      const float J_p = 0.0200;    // Pendulum arm moment of inertia as kg/m^2
+      const float K_g = 1.2255;    // Potential energy constant
+
+
+      static double prev_output = 0.0;
+
+      KE_p = v_p*v_p*J_p/2.0;
+      KE_f = dyaw_smooth*dyaw_smooth*J_f/2.0;
+      PE_p = K_g * (cos(a_p)-1);
+      double total_energy = KE_p + KE_f + PE_p;
+
+      // IIR lowpass filter :3
+      double output = 0.2*total_energy + 0.8*prev_output;
+      prev_output = output;
+
+      ctrl_value = -(float)(output * dyaw_smooth * 100);
+    }
+
+    // Clip the control value
+    if (ctrl_value > 0.7) ctrl_value = 0.7;
+    else if (ctrl_value < -0.7) ctrl_value = -0.7;
 
     // Update motor output
     if (rwp_mode == RWP_MODE_AUTO) {
-      // Motor control value
-      float ctrl_value = 0.0;
-
-      // If we're within 10 degrees of the setpoint, activate the linear controller
-      if (a_p < 10.0 && a_p > -10.0) {
-        ctrl_value = -(35*a_p + 2.8*v_p - 0.02*v_f);
-      }
-      // Otherwise, activate the swingup controller
-      else {
-        const float J_f = 0.0005825; // Reaction wheel moment of inertia as kg/m^2
-        const float J_p = 0.0256;    // Pendulum arm moment of inertia as kg/m^2
-        const float K_g = 1.2255;    // Potential energy constant
-
-        float KE_p = v_p*v_p*J_p/2.0;
-        float KE_f = v_f*v_f*J_f/2.0;
-        float PE_p = K_g * (cos(a_p)-1);
-        float total_energy = KE_p + KE_f + PE_p;
-
-        ctrl_value = -total_energy * v_f * 500;
-      }
-
-      // Clip the control value
-      if (ctrl_value > 0.7) ctrl_value = 0.7;
-      else if (ctrl_value < -0.7) ctrl_value = -0.7;
-
+      // Set the motor output to the calculated control value if in auto mode
       setMotorOutput(ctrl_value);
     }
-    else {
+    else if (rwp_mode == RWP_MODE_MANUAL) {
       // Set motor output to user input if in manual mode
       setMotorOutput(motor_output);
+    }
+    else {
+      setMotorOutput(0);
     }
 
 
@@ -164,16 +228,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     // If there's data available from the nRF24, get it!
     uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
     if ((fifo_status & 0b00000001) == 0) {
-      // Clear, rebuild and set new acknowledge payload
-      RWP_MESSAGE_FRAME rwp_message;
-      memset(rwp_message.bytes, 0x00, 32);
-      rwp_message.sensor_data.yaw = yaw;
-      rwp_message.sensor_data.pitch = pitch;
-      rwp_message.sensor_data.roll = roll;
-      rwp_message.sensor_data.rotary_encoder = pulse_count;
-      rwp_message.sensor_data.data_type = SENSOR_DATA;
-      rwp_message.sensor_data.cur_mode = rwp_mode;
-      writeNRF24ackPayload(rwp_message.bytes, 16, 0);
 
       // Read the received packet into a frame get its contents
       RMT_MESSAGE_FRAME rmt_message;
@@ -181,7 +235,36 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
       int16_t raw_value = rmt_message.control_msg.pot_value;
       motor_output = raw_value/2048.0f;
       // and update the mode based on received packet
-      rwp_mode  = rmt_message.control_msg.req_mode;
+      rwp_mode = rmt_message.control_msg.req_mode;
+      rwp_data = rmt_message.control_msg.req_data_type;
+
+      // Clear, rebuild and set new acknowledge payload
+      RWP_MESSAGE_FRAME rwp_message;
+      memset(rwp_message.bytes, 0x00, 32);
+      rwp_message.sensor_data.data_type = rwp_data;
+      rwp_message.sensor_data.cur_mode = rwp_mode;
+      if (rwp_data == SENSOR_DATA) {
+        rwp_message.sensor_data.yaw = RAD_TO_DEG * yaw;
+        rwp_message.sensor_data.pitch = RAD_TO_DEG * pitch;
+        rwp_message.sensor_data.roll = RAD_TO_DEG * roll;
+        rwp_message.sensor_data.rotary_encoder = pulse_count;
+      }
+      else {
+        uint8_t control_mode = (a_p < ANGLE_LIM && a_p > -ANGLE_LIM) ? 1 : 0;
+        rwp_message.control_data.control_mode = control_mode;
+        rwp_message.control_data.ctrl_value   = ctrl_value;
+        if (control_mode == 1) {
+          rwp_message.control_data.v_a = yaw;
+          rwp_message.control_data.v_b = dyaw;
+          rwp_message.control_data.v_c = v_f;
+        }
+        else {
+          rwp_message.control_data.v_a = PE_p;
+          rwp_message.control_data.v_b = KE_p;
+          rwp_message.control_data.v_c = KE_f;
+        }
+      }
+      writeNRF24ackPayload(rwp_message.bytes, 16, 0);
 
       // Clear RX_DR interrupt
       writeNRF24register(N24_STATUS, 0b01000000);
@@ -190,65 +273,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     // Reset pulse_count to get a relative measurement
     pulse_count = 0;
   }
-}
-
-
-const float MAX_PWM_CRR = 5000.0f;
-
-void setMotorOutput(float v) {
-  int16_t motor_output = (int16_t)(MAX_PWM_CRR*v);
-
-  // Input clipping and taking absolute
-  if (v > 1.0f || v < -1.0f)
-    motor_output = MAX_PWM_CRR;
-  else if (v < 0.0f)
-    motor_output = -motor_output;
-
-  // Set the CRR value
-  TIM4->CCR2 = motor_output;
-
-  // Set direction pins
-  if (v > 0.0f) {
-    HAL_GPIO_WritePin(MOT_fwd_GPIO_Port, MOT_fwd_Pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(MOT_bwd_GPIO_Port, MOT_bwd_Pin, GPIO_PIN_RESET);
-  }
-  else {
-    HAL_GPIO_WritePin(MOT_fwd_GPIO_Port, MOT_fwd_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MOT_bwd_GPIO_Port, MOT_bwd_Pin, GPIO_PIN_SET);
-  }
-}
-
-void setupNRF24() {
-  // Turn off module while configuring it.
-  writeNRF24register(N24_CONFIG,    0b01111001); // Mask all interrupts, enable 1B CRC, keep power down, act as PTX
-
-  // Setup extra features. TODO: The toggleNRF24extraFeatures function doesn't seem to have an effect... find out why?
-  toggleNRF24extraFeatures();
-  writeNRF24register(N24_FEATURE,   0b00000111); // Enable all acknowledge payload features
-  writeNRF24register(N24_DYNPD,     0b00000001); // Enable dynamic payload in pipe 0
-
-  // Miscellaneous configuration settings.
-  writeNRF24register(N24_EN_AA,     0b00000001); // Only enable auto acknowledge on pipe 0
-  writeNRF24register(N24_EN_RXADDR, 0b00000001); // Only enable reception on pipe 0
-  writeNRF24register(N24_SETUP_AW,  0b00000011); // Set 5 byte address width
-  writeNRF24register(N24_SETUP_RETR,0b00010101); // 5 retransmissions, each spaced 500us apart
-  writeNRF24register(N24_RF_CH,     0b00010010); // Set frequency channel to 2... this is the datasheet's default, so I'll trust it for now
-  writeNRF24register(N24_RF_SETUP,  0b00000111); // 1Mbps tx rate, 0dBm tx gain, setup LNA gain (idk what that means)
-
-  // Setup TX and RX addresses.
-  const uint8_t device_addr[5] = {0b01101001, 0b10010110, 0b10010110, 0b01101001, 0b10101010};
-  setNRF24TXaddr(device_addr, 5);    // Configure TX address
-  setNRF24RXaddr(device_addr, 5, 0); // Configure RX address for pipe 0 to be the same as TX address
-
-  // Flush the buffers
-  flushNRF24buffers();
-
-  // Final configuration, and turn on the module
-  writeNRF24register(N24_CONFIG, 0b01111011); // Power up the nRF24
-  //TODO: Footnote d on Table 24 (pg. 58) says that DPL needs to be activated on both PTX and PRX
-  //      if you want to have payloads on the ACK packet. Configure this!
-
-  HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
 }
 
 /* USER CODE END 0 */
@@ -287,23 +311,48 @@ int main(void)
   MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
 
-
-  // Start the nRF24
-  setupNRF24();
-
-  // Start the BNO085
-  BNO_startup();
-
   // Stop motor, then start PWM generation
   setMotorOutput(0.0f);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
 
+  // Startup tune
+  HAL_GPIO_WritePin(MOT_fwd_GPIO_Port, MOT_fwd_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(MOT_bwd_GPIO_Port, MOT_bwd_Pin, GPIO_PIN_SET);
+  setMotorBeep(nA4);
+  HAL_Delay(120);
+  setMotorBeep(nCs4);
+  HAL_Delay(120);
+  setMotorBeep(nE4);
+  HAL_Delay(120);
+  setMotorBeep(nA5);
+  HAL_Delay(120);
+  stopBeep();
+  HAL_Delay(240);
+  HAL_GPIO_WritePin(MOT_fwd_GPIO_Port, MOT_fwd_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(MOT_bwd_GPIO_Port, MOT_bwd_Pin, GPIO_PIN_RESET);
+  setMotorBeep(nA5);
+  HAL_Delay(120);
+  setMotorBeep(nE4);
+  HAL_Delay(120);
+  setMotorBeep(nCs4);
+  HAL_Delay(120);
+  setMotorBeep(nA4);
+  HAL_Delay(120);
+  stopBeep();
+
+  // Start the nRF24
+  NRF24_init();
+
+  // Start the BNO085
+  BNO_startup();
 
   // Start checking the nRF24 after setting everything else up
   HAL_TIM_Base_Start_IT(&htim5);
 
   // Then start the rotation vector output
   BNO_startRotationVector();
+
+
 
   /* USER CODE END 2 */
 
@@ -312,7 +361,6 @@ int main(void)
 
   while (1)
   {
-
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

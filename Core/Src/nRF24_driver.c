@@ -170,3 +170,38 @@ void flushNRF24buffers() {
   HAL_SPI_Transmit(&hspi1, spi_out_data, 1, 10);
   HAL_GPIO_WritePin(NRF_CSN_GPIO_Port, NRF_CSN_Pin, GPIO_PIN_SET);
 }
+
+
+// Shared setup code to ensure compatibility between PTX and PRX
+void NRF24_init() {
+  // Turn off module while configuring it.
+  writeNRF24register(N24_CONFIG,    0b01111001); // Mask all interrupts, enable 1B CRC, keep power down, act as PTX
+
+  // Setup extra features. TODO: The toggleNRF24extraFeatures function doesn't seem to have an effect... find out why?
+  toggleNRF24extraFeatures();
+  writeNRF24register(N24_FEATURE,   0b00000111); // Enable all acknowledge payload features
+  writeNRF24register(N24_DYNPD,     0b00000001); // Enable dynamic payload in pipe 0
+
+  // Miscellaneous configuration settings.
+  writeNRF24register(N24_EN_AA,     0b00000001); // Only enable auto acknowledge on pipe 0
+  writeNRF24register(N24_EN_RXADDR, 0b00000001); // Only enable reception on pipe 0
+  writeNRF24register(N24_SETUP_AW,  0b00000011); // Set 5 byte address width
+  writeNRF24register(N24_SETUP_RETR,0b00010101); // 5 retransmissions, each spaced 500us apart
+  writeNRF24register(N24_RF_CH,     0b00010010); // Set frequency channel to 2... this is the datasheet's default, so I'll trust it for now
+  writeNRF24register(N24_RF_SETUP,  0b00000111); // 1Mbps tx rate, 0dBm tx gain, setup LNA gain (idk what that means)
+
+  // Setup TX and RX addresses.
+  const uint8_t device_addr[5] = {0b01101001, 0b10010110, 0b10010110, 0b01101001, 0b10101010};
+  setNRF24TXaddr(device_addr, 5);    // Configure TX address
+  setNRF24RXaddr(device_addr, 5, 0); // Configure RX address for pipe 0 to be the same as TX address
+
+  // Flush the buffers
+  flushNRF24buffers();
+
+  // Final configuration, and turn on the module
+  writeNRF24register(N24_CONFIG, 0b01111011); // Power up the nRF24
+  //TODO: Footnote d on Table 24 (pg. 58) says that DPL needs to be activated on both PTX and PRX
+  //      if you want to have payloads on the ACK packet. Configure this!
+
+  HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
+}

@@ -61,5 +61,6 @@ void    readNRF24payload(uint8_t* buffer, uint8_t data_len);
 void    toggleNRF24extraFeatures();
 void    writeNRF24ackPayload(const uint8_t* data, uint8_t data_len, uint8_t pipe_no);
 void    flushNRF24buffers();
+void    NRF24_init();
 
 #endif /* SRC_NRF24_DRIVER_H_ */
