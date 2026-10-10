@@ -187,7 +187,7 @@ void NRF24_init() {
   writeNRF24register(N24_EN_RXADDR, 0b00000001); // Only enable reception on pipe 0
   writeNRF24register(N24_SETUP_AW,  0b00000011); // Set 5 byte address width
   writeNRF24register(N24_SETUP_RETR,0b00010101); // 5 retransmissions, each spaced 500us apart
-  writeNRF24register(N24_RF_CH,     0b00010010); // Set frequency channel to 2... this is the datasheet's default, so I'll trust it for now
+  writeNRF24register(N24_RF_CH,     0b00010010); // Set frequency channel to 18. This works better than the default (2)
   writeNRF24register(N24_RF_SETUP,  0b00000111); // 1Mbps tx rate, 0dBm tx gain, setup LNA gain (idk what that means)
 
   // Setup TX and RX addresses.

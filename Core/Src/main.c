@@ -62,9 +62,9 @@ SPI_HandleTypeDef*  hspi_bno  = &hspi1;
 const float DEG_TO_RAD = PI/180.0;
 const float RAD_TO_DEG = 180.0/PI;
 // Maximum angle to activate linear controller in
-const float ANGLE_LIM  = 10.0*DEG_TO_RAD;
+const float ANGLE_LIM  = 2.5*DEG_TO_RAD;
 // Linear region offset (radians)
-const float LINEAR_OFFSET = 3.8*DEG_TO_RAD;
+const float LINEAR_OFFSET = 2.1*DEG_TO_RAD;
 
 
 #define nA4  440.00
@@ -100,37 +100,42 @@ void setMotorOutput(float);
 float yaw, yaw_raw;
 float dyaw, dyaw_raw, dyaw_smooth;
 float pitch, roll;
-float accuracy;
 // Rotary encoder output
 int16_t pulse_count = 0;
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   if (GPIO_Pin == BNO_IRQ_Pin) {
-    float yaw_prev = yaw;
-    float yaw_raw_prev = yaw_raw;
-
-    BNO_IRQcallback();
-    BNO_getYPR(&yaw, &pitch, &roll);
-    BNO_getAccuracy(&accuracy);
-
-    // Correct for nonlinearity.....
-    yaw_raw = yaw;
-    yaw = motorLinearizationLookup(yaw);
-
-    // Calculate raw dyaw for linear region
-    dyaw_raw = (yaw_raw_prev - yaw_prev)*100.0;
-
     // Yes, this is sketch.
-    // The angle output runs from -pi to pi radians. 0 radians
+    // The IMU measurement is very non-linear, so I put it through
+    // a lookup table to linearise. This introduces a lot of noise,
+    // so an IIR is used to denoise. The phase lag this introduces
+    // is too much for the linear region, so a separate set of raw
+    // values is maintained as well...
+    //
+    // Next,
+    // the angle output runs from -pi to pi radians. 0 radians
     // corresponds to the upright position, and pi/-pi is the
     // downwards position. Due to this, the angle output is dis-
     // continuous when the pendulum points exactly downwards.
-    //
     // To fix this, I check how big the calculated angular velocity
     // is, and if it exceeds pi radians per timestep (100 radians/s)
     // then we assume that the zero point was crossed and subtract 2*pi
     // from the result.
 
+    float yaw_prev = yaw, yaw_raw_prev = yaw_raw;
+
+    BNO_IRQcallback();
+    BNO_getYPR(&yaw_raw, &pitch, &roll);
+
+    // Calculate raw dyaw for linear region
+    // This is only used when yaw is smol, so adjusting for
+    // the discontinuity is not necessary
+    dyaw_raw = (yaw_raw_prev - yaw_raw)*100.0;
+
+    // Correct the plain yaw for nonlinearity.....
+    yaw = motorLinearizationLookup(yaw_raw);
+
+    // For implementing IIR
     static float last_iir_output = 0.0;
 
     if (yaw - yaw_prev > PI)
@@ -140,7 +145,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     else
       dyaw = (yaw - yaw_prev)*100.0;
 
-    last_iir_output = 0.90 * last_iir_output + 0.10 * dyaw;
+    // IIR filter for dyaw
+    last_iir_output = 0.80 * last_iir_output + 0.20 * dyaw;
     dyaw_smooth = last_iir_output;
 
     return;
@@ -163,7 +169,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
   // 200Hz timer (for control and comms)
   if (htim == &htim5) {
     // Control variables
-    static double a_p, v_f, v_p;
+    static double a_p, a_pl, v_f, v_p, v_pl;
     static double KE_p, KE_f, PE_p;
     static double motor_output  = 0.0;
 
@@ -171,30 +177,34 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     /* ============== MOTOR CONTROL CODE ============= */
 
     // Calculate the current state (all rad or rad/s)
-    v_f  = (400*3.14159265)/(1024.00)*pulse_count;
+    v_f  = (400*PI)/(1024.00)*pulse_count;
     a_p  = yaw;
-    v_p  = dyaw;
+    a_pl = yaw_raw + LINEAR_OFFSET;
+    v_p  = dyaw_smooth;
+    v_pl = dyaw_raw;
 
     // Motor control value
     float ctrl_value = 0.0;
 
+    if (rwp_mode == RWP_MODE_LOCK) {
+      ctrl_value = -0.1*v_f;
+    }
     // If we're within 10 degrees of the setpoint, activate the linear controller
-    if ((a_p+0.069 < ANGLE_LIM) && (a_p+0.069 > -ANGLE_LIM)) {
-      yaw_raw += 0.04;
-      ctrl_value = -(100*yaw_raw + 0*dyaw_raw - 0*v_f);
+    else if ((a_pl < ANGLE_LIM) && (a_pl > -ANGLE_LIM)) {
+//      ctrl_value = -(35000*a_pl - 2800*v_pl - 7.5*v_f);
+      ctrl_value = -0.05;
     }
     // Otherwise, activate the swingup controller
     else {
-      const float J_f = 0.0005825; // Reaction wheel moment of inertia as kg/m^2
-//      const float J_p = 0.0256;    // Pendulum arm moment of inertia as kg/m^2
-      const float J_p = 0.0200;    // Pendulum arm moment of inertia as kg/m^2
+      const float J_f = 0.00005;   // Reaction wheel moment of inertia as kg/m^2
+      const float J_p = 0.012;     // Pendulum arm moment of inertia as kg/m^2
       const float K_g = 1.2255;    // Potential energy constant
 
 
       static double prev_output = 0.0;
 
       KE_p = v_p*v_p*J_p/2.0;
-      KE_f = dyaw_smooth*dyaw_smooth*J_f/2.0;
+      KE_f = v_f*v_f*J_f/2.0;
       PE_p = K_g * (cos(a_p)-1);
       double total_energy = KE_p + KE_f + PE_p;
 
@@ -202,7 +212,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
       double output = 0.2*total_energy + 0.8*prev_output;
       prev_output = output;
 
-      ctrl_value = -(float)(output * dyaw_smooth * 100);
+      ctrl_value = -(float)(output * v_p * 100);
     }
 
     // Clip the control value
@@ -210,8 +220,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     else if (ctrl_value < -0.7) ctrl_value = -0.7;
 
     // Update motor output
-    if (rwp_mode == RWP_MODE_AUTO) {
-      // Set the motor output to the calculated control value if in auto mode
+    if (rwp_mode == RWP_MODE_AUTO || rwp_mode == RWP_MODE_LOCK) {
+      // Set the motor output to the calculated control value if in auto or rotor lock mode
       setMotorOutput(ctrl_value);
     }
     else if (rwp_mode == RWP_MODE_MANUAL) {
@@ -254,8 +264,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         rwp_message.control_data.control_mode = control_mode;
         rwp_message.control_data.ctrl_value   = ctrl_value;
         if (control_mode == 1) {
-          rwp_message.control_data.v_a = yaw;
-          rwp_message.control_data.v_b = dyaw;
+          rwp_message.control_data.v_a = a_pl;
+          rwp_message.control_data.v_b = v_pl;
           rwp_message.control_data.v_c = v_f;
         }
         else {
