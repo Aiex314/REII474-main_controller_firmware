@@ -70,22 +70,22 @@ void Error_Handler(void);
 #define BNO_IRQ_Pin GPIO_PIN_3
 #define BNO_IRQ_GPIO_Port GPIOA
 #define BNO_IRQ_EXTI_IRQn EXTI3_IRQn
-#define ROT_A_Pin GPIO_PIN_1
-#define ROT_A_GPIO_Port GPIOB
-#define ROT_A_EXTI_IRQn EXTI1_IRQn
-#define ROT_B_Pin GPIO_PIN_2
+#define ROT_B_Pin GPIO_PIN_1
 #define ROT_B_GPIO_Port GPIOB
-#define ROT_B_EXTI_IRQn EXTI2_IRQn
+#define ROT_B_EXTI_IRQn EXTI1_IRQn
+#define ROT_A_Pin GPIO_PIN_2
+#define ROT_A_GPIO_Port GPIOB
+#define ROT_A_EXTI_IRQn EXTI2_IRQn
 #define NRF_CE_Pin GPIO_PIN_12
 #define NRF_CE_GPIO_Port GPIOA
 #define NRF_CSN_Pin GPIO_PIN_15
 #define NRF_CSN_GPIO_Port GPIOA
 #define MOT_pwm_Pin GPIO_PIN_7
 #define MOT_pwm_GPIO_Port GPIOB
-#define MOT_bwd_Pin GPIO_PIN_8
-#define MOT_bwd_GPIO_Port GPIOB
-#define MOT_fwd_Pin GPIO_PIN_9
+#define MOT_fwd_Pin GPIO_PIN_8
 #define MOT_fwd_GPIO_Port GPIOB
+#define MOT_bwd_Pin GPIO_PIN_9
+#define MOT_bwd_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

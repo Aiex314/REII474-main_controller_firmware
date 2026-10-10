@@ -517,7 +517,7 @@ void BNO_IRQcallback() {
 
 
 void BNO_getYPR(float* y, float* p, float* r) {
-  *y = curYaw;
+  *y = -curYaw;
   *p = curPitch;
   *r = curRoll;
 }

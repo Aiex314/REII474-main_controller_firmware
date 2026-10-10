@@ -60,9 +60,9 @@ SPI_HandleTypeDef*  hspi_bno  = &hspi1;
 // Conversion constants
 #define PI 3.14159265358979323
 const float DEG_TO_RAD = PI/180.0;
-const float RAD_TO_DEG = 180.0/PI;
+const float RAD_TO_DEG = (180.0/PI);
 // Maximum angle to activate linear controller in
-const float ANGLE_LIM  = 2.5*DEG_TO_RAD;
+const float ANGLE_LIM  = 10.0*DEG_TO_RAD;
 // Linear region offset (radians)
 const float LINEAR_OFFSET = 2.1*DEG_TO_RAD;
 
@@ -130,7 +130,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     // Calculate raw dyaw for linear region
     // This is only used when yaw is smol, so adjusting for
     // the discontinuity is not necessary
-    dyaw_raw = (yaw_raw_prev - yaw_raw)*100.0;
+    dyaw_raw = (yaw_raw - yaw_raw_prev)*100.0;
 
     // Correct the plain yaw for nonlinearity.....
     yaw = motorLinearizationLookup(yaw_raw);
@@ -179,7 +179,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     // Calculate the current state (all rad or rad/s)
     v_f  = (400*PI)/(1024.00)*pulse_count;
     a_p  = yaw;
-    a_pl = yaw_raw + LINEAR_OFFSET;
+    a_pl = yaw_raw - LINEAR_OFFSET;
     v_p  = dyaw_smooth;
     v_pl = dyaw_raw;
 
@@ -192,12 +192,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     // If we're within 10 degrees of the setpoint, activate the linear controller
     else if ((a_pl < ANGLE_LIM) && (a_pl > -ANGLE_LIM)) {
 //      ctrl_value = -(35000*a_pl - 2800*v_pl - 7.5*v_f);
-      ctrl_value = -0.05;
+      ctrl_value = -(35*a_pl + 2.8*v_pl - 0.02*v_f);
     }
     // Otherwise, activate the swingup controller
     else {
       const float J_f = 0.00005;   // Reaction wheel moment of inertia as kg/m^2
-      const float J_p = 0.012;     // Pendulum arm moment of inertia as kg/m^2
+      const float J_p = 0.0125;     // Pendulum arm moment of inertia as kg/m^2
       const float K_g = 1.2255;    // Potential energy constant
 
 
@@ -260,7 +260,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         rwp_message.sensor_data.rotary_encoder = pulse_count;
       }
       else {
-        uint8_t control_mode = (a_p < ANGLE_LIM && a_p > -ANGLE_LIM) ? 1 : 0;
+        uint8_t control_mode = (a_pl < ANGLE_LIM && a_pl > -ANGLE_LIM) ? 1 : 0;
         rwp_message.control_data.control_mode = control_mode;
         rwp_message.control_data.ctrl_value   = ctrl_value;
         if (control_mode == 1) {
@@ -593,7 +593,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOA, BNO_RESET_Pin|NRF_CE_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, MOT_bwd_Pin|MOT_fwd_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, MOT_fwd_Pin|MOT_bwd_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : BLINK_Pin */
   GPIO_InitStruct.Pin = BLINK_Pin;
@@ -617,14 +617,14 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(BNO_IRQ_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ROT_A_Pin ROT_B_Pin */
-  GPIO_InitStruct.Pin = ROT_A_Pin|ROT_B_Pin;
+  /*Configure GPIO pins : ROT_B_Pin ROT_A_Pin */
+  GPIO_InitStruct.Pin = ROT_B_Pin|ROT_A_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : MOT_bwd_Pin MOT_fwd_Pin */
-  GPIO_InitStruct.Pin = MOT_bwd_Pin|MOT_fwd_Pin;
+  /*Configure GPIO pins : MOT_fwd_Pin MOT_bwd_Pin */
+  GPIO_InitStruct.Pin = MOT_fwd_Pin|MOT_bwd_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
