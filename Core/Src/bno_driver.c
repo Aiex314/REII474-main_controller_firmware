@@ -253,11 +253,7 @@ void BNO_startRotationVector() {
 
 
 
-// TODO: Fix this. Not critical, but this does not work...
-//       - Need to treat status codes properly
-//       - Need to treat separated responses properly (reads longer than length 2)
-//       - Need to provide a better interface (error codes, true read length, etc.)
-//       - Need input validation
+// TODO: Validate whether this works correctly...
 uint8_t BNO_readFRSrecord(uint16_t record_num, uint16_t read_offset, uint16_t read_len, uint8_t* out_buf) {
   uint8_t recv_buf[16];
   // See page 40 of SH-2 datasheet for FRS read response format & length

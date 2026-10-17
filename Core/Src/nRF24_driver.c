@@ -109,7 +109,6 @@ void sendNRF24payload(const uint8_t* data, uint8_t data_len) {
   HAL_GPIO_WritePin(NRF_CSN_GPIO_Port, NRF_CSN_Pin, GPIO_PIN_RESET);
   HAL_SPI_Transmit(&hspi1, data, 1+data_len, 10);
 
-  // TODO: The pulse on NRF_CE must be longer than 10us. Check whether this is the case.
   HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(NRF_CSN_GPIO_Port, NRF_CSN_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_RESET);
@@ -177,7 +176,7 @@ void NRF24_init() {
   // Turn off module while configuring it.
   writeNRF24register(N24_CONFIG,    0b01111001); // Mask all interrupts, enable 1B CRC, keep power down, act as PTX
 
-  // Setup extra features. TODO: The toggleNRF24extraFeatures function doesn't seem to have an effect... find out why?
+  // Setup extra features.
   toggleNRF24extraFeatures();
   writeNRF24register(N24_FEATURE,   0b00000111); // Enable all acknowledge payload features
   writeNRF24register(N24_DYNPD,     0b00000001); // Enable dynamic payload in pipe 0
@@ -200,8 +199,6 @@ void NRF24_init() {
 
   // Final configuration, and turn on the module
   writeNRF24register(N24_CONFIG, 0b01111011); // Power up the nRF24
-  //TODO: Footnote d on Table 24 (pg. 58) says that DPL needs to be activated on both PTX and PRX
-  //      if you want to have payloads on the ACK packet. Configure this!
 
   HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
 }

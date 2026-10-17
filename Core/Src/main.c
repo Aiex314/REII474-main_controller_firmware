@@ -57,29 +57,25 @@ TIM_HandleTypeDef htim5;
 SPI_HandleTypeDef*  hspi_bno  = &hspi1;
 
 // ======================== CONSTANTS =======================
-// Conversion constants
+// pi
 #define PI 3.14159265358979323
+// Angle conversion constants
 const float DEG_TO_RAD = PI/180.0;
 const float RAD_TO_DEG = (180.0/PI);
-// Maximum angle to activate linear controller in
-const float ANGLE_LIM  = 10.0*DEG_TO_RAD;
+
+// Maximum controller output
+#define MAX_CTRL 0.7
+// Controller frequency
+#define CTRL_FREQ 200.0
+// Maximum angle and speed to activate linear controller in
+const float ANGLE_LIM  = 7.5*DEG_TO_RAD;
+const float SPEED_LIM  = 0.15;
 // Linear region offset (radians)
 const float LINEAR_OFFSET = 2.1*DEG_TO_RAD;
 
-
-#define nA4  440.00
-#define nB4  493.88
-#define nC4  523.25
-#define nD4  587.33
-#define nE4  659.26
-#define nF4  698.46
-#define nG4  783.99
-#define nAs4 466.16
-#define nCs4 554.37
-#define nDs4 622.25
-#define nFs4 739.99
-#define nGs4 830.61
-#define nA5  880.00
+// Rotary encoder pulses per rotation, and conversion constant
+#define ROTARY_ENC_PPR 1024.0
+const float ROT_E_TO_ROT_VEL = 2.0*PI*CTRL_FREQ/ROTARY_ENC_PPR;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -103,9 +99,12 @@ float pitch, roll;
 // Rotary encoder output
 int16_t pulse_count = 0;
 
+// There are two sources of pin interrupts. These are the IMU's IRQ and the rotary encoder.
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  // IMU interrupt request
   if (GPIO_Pin == BNO_IRQ_Pin) {
     // Yes, this is sketch.
+    //
     // The IMU measurement is very non-linear, so I put it through
     // a lookup table to linearise. This introduces a lot of noise,
     // so an IIR is used to denoise. The phase lag this introduces
@@ -113,17 +112,22 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     // values is maintained as well...
     //
     // Next,
-    // the angle output runs from -pi to pi radians. 0 radians
-    // corresponds to the upright position, and pi/-pi is the
-    // downwards position. Due to this, the angle output is dis-
-    // continuous when the pendulum points exactly downwards.
-    // To fix this, I check how big the calculated angular velocity
-    // is, and if it exceeds pi radians per timestep (100 radians/s)
-    // then we assume that the zero point was crossed and subtract 2*pi
-    // from the result.
+    // the angle output runs from -pi to pi radians. 0 radians corr-
+    // esponds to the upright position, and pi/-pi is the downwards
+    // position. Due to this, the angle output is discontinuous when
+    // the pendulum points exactly downwards. This  breaks numeric
+    // differentiation, giving massive spikes for dyaw. To fix this,
+    // I check how big the calculated angular velocity is, and if it
+    // exceeds +-pi radians per timestep (100 radians/s) then we ass-
+    // ume that the zero point was crossed and subtract/add 2*pi from -
+    // the result before using it to calculate dyaw.
+    //
+    // It's hacky, but I've tested it...
 
+    // Save previously measured values
     float yaw_prev = yaw, yaw_raw_prev = yaw_raw;
 
+    // Get the raw IMU values
     BNO_IRQcallback();
     BNO_getYPR(&yaw_raw, &pitch, &roll);
 
@@ -132,12 +136,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     // the discontinuity is not necessary
     dyaw_raw = (yaw_raw - yaw_raw_prev)*100.0;
 
-    // Correct the plain yaw for nonlinearity.....
+    // Correct the plain yaw for nonlinearity
     yaw = motorLinearizationLookup(yaw_raw);
 
-    // For implementing IIR
-    static float last_iir_output = 0.0;
-
+    // Calculate plain dyaw, being aware of the discontinuity
     if (yaw - yaw_prev > PI)
       dyaw = (yaw - yaw_prev - 2*PI)*100.0;
     else if (yaw - yaw_prev < -PI)
@@ -146,15 +148,22 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
       dyaw = (yaw - yaw_prev)*100.0;
 
     // IIR filter for dyaw
+    static float last_iir_output = 0.0;
     last_iir_output = 0.80 * last_iir_output + 0.20 * dyaw;
     dyaw_smooth = last_iir_output;
 
     return;
   }
+  // Rotary encoder tick
   else {
+    // Get the rotary encoder pin levels
     GPIO_PinState A_status = HAL_GPIO_ReadPin(ROT_A_GPIO_Port, ROT_A_Pin);
     GPIO_PinState B_status = HAL_GPIO_ReadPin(ROT_B_GPIO_Port, ROT_B_Pin);
 
+    // If pin A triggered, the pins are the same when rotating CCW
+    // If pin B triggered, the pins are different when rotating CCW
+    // If the pins have the opposite sense to the above, rotation is CW
+    // This can elegantly be expressed as the below
     if ((GPIO_Pin == ROT_A_Pin) == (A_status == B_status))
       pulse_count++;
     else
@@ -166,7 +175,8 @@ RWP_MODE rwp_mode = RWP_MODE_HALTED;
 RWP_DATA_KIND rwp_data = SENSOR_DATA;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
-  // 200Hz timer (for control and comms)
+  // 200Hz timer for control
+  // TODO: Move the communications code to a 500Hz timer and make the IMU output at 200Hz!!!
   if (htim == &htim5) {
     // Control variables
     static double a_p, a_pl, v_f, v_p, v_pl;
@@ -177,7 +187,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     /* ============== MOTOR CONTROL CODE ============= */
 
     // Calculate the current state (all rad or rad/s)
-    v_f  = (400*PI)/(1024.00)*pulse_count;
+    v_f  = (2*200*PI)/(8192.00)*pulse_count;
     a_p  = yaw;
     a_pl = yaw_raw - LINEAR_OFFSET;
     v_p  = dyaw_smooth;
@@ -186,38 +196,35 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     // Motor control value
     float ctrl_value = 0.0;
 
-    if (rwp_mode == RWP_MODE_LOCK) {
+    // If the rotor lock mode is enabled, resist any rotation of the rotor
+    if (rwp_mode == RWP_MODE_LOCK)
       ctrl_value = -0.1*v_f;
-    }
-    // If we're within 10 degrees of the setpoint, activate the linear controller
-    else if ((a_pl < ANGLE_LIM) && (a_pl > -ANGLE_LIM)) {
-//      ctrl_value = -(35000*a_pl - 2800*v_pl - 7.5*v_f);
-      ctrl_value = -(35*a_pl + 2.8*v_pl - 0.02*v_f);
-    }
+    // If the pendulum state is within acceptable bounds, use linear controller
+    else if ((a_pl < ANGLE_LIM) && (a_pl > -ANGLE_LIM) && (v_pl < SPEED_LIM) && (v_pl > -SPEED_LIM))
+      ctrl_value = -(48.17*a_pl + 6.97*v_pl - 0.0473*v_f);
     // Otherwise, activate the swingup controller
     else {
       const float J_f = 0.00005;   // Reaction wheel moment of inertia as kg/m^2
-      const float J_p = 0.0125;     // Pendulum arm moment of inertia as kg/m^2
+      const float J_p = 0.0127;     // Pendulum arm moment of inertia as kg/m^2
       const float K_g = 1.2255;    // Potential energy constant
 
-
-      static double prev_output = 0.0;
-
+      // System energy estimation
       KE_p = v_p*v_p*J_p/2.0;
       KE_f = v_f*v_f*J_f/2.0;
       PE_p = K_g * (cos(a_p)-1);
       double total_energy = KE_p + KE_f + PE_p;
 
       // IIR lowpass filter :3
+      static double prev_output = 0.0;
       double output = 0.2*total_energy + 0.8*prev_output;
       prev_output = output;
 
-      ctrl_value = -(float)(output * v_p * 100);
+      ctrl_value = -(float)(output * v_p * 20);
     }
 
     // Clip the control value
-    if (ctrl_value > 0.7) ctrl_value = 0.7;
-    else if (ctrl_value < -0.7) ctrl_value = -0.7;
+    if (ctrl_value > MAX_CTRL) ctrl_value = MAX_CTRL;
+    else if (ctrl_value < -MAX_CTRL) ctrl_value = -MAX_CTRL;
 
     // Update motor output
     if (rwp_mode == RWP_MODE_AUTO || rwp_mode == RWP_MODE_LOCK) {
@@ -325,30 +332,8 @@ int main(void)
   setMotorOutput(0.0f);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
 
-  // Startup tune
-  HAL_GPIO_WritePin(MOT_fwd_GPIO_Port, MOT_fwd_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(MOT_bwd_GPIO_Port, MOT_bwd_Pin, GPIO_PIN_SET);
-  setMotorBeep(nA4);
-  HAL_Delay(120);
-  setMotorBeep(nCs4);
-  HAL_Delay(120);
-  setMotorBeep(nE4);
-  HAL_Delay(120);
-  setMotorBeep(nA5);
-  HAL_Delay(120);
-  stopBeep();
-  HAL_Delay(240);
-  HAL_GPIO_WritePin(MOT_fwd_GPIO_Port, MOT_fwd_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(MOT_bwd_GPIO_Port, MOT_bwd_Pin, GPIO_PIN_RESET);
-  setMotorBeep(nA5);
-  HAL_Delay(120);
-  setMotorBeep(nE4);
-  HAL_Delay(120);
-  setMotorBeep(nCs4);
-  HAL_Delay(120);
-  setMotorBeep(nA4);
-  HAL_Delay(120);
-  stopBeep();
+  // Play a startup tune
+  playStartupTune();
 
   // Start the nRF24
   NRF24_init();

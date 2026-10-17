@@ -16,5 +16,6 @@
 void setMotorBeep(float freq);
 void stopBeep();
 void setMotorOutput(float v);
+void playStartupTune();
 
 #endif /* SRC_MOTOR_CONTROLLER_H_ */
