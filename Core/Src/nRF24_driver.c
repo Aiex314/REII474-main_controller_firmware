@@ -11,8 +11,8 @@
 #include <stdint.h>
 
 
-#define NRF_CSN_Pin GPIO_PIN_15
-#define NRF_CSN_GPIO_Port GPIOA
+#define NRF_CSN_Pin GPIO_PIN_4
+#define NRF_CSN_GPIO_Port GPIOB
 #define NRF_CE_Pin GPIO_PIN_12
 #define NRF_CE_GPIO_Port GPIOA
 extern SPI_HandleTypeDef hspi1;

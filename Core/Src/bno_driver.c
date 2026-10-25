@@ -180,13 +180,29 @@ void BNO_startup() {
 
 
   // Transmit a sensor reorientation request
+  // If you inspect the table on pg.41 of the BNO085 datasheet (fig. 4-3)
+  // you'll see that each of the below are rotated by 180 degrees about the
+  // Z-axis. This is done intentionally, so that the sensor fusion output
+  // gives 0 degrees when the pendulum is upright.
+
+//  // Original version. IMU mounted with X->North, Y->Up, Z->East
+//  uint8_t REORIENT_SENSOR[] = {
+//    0xf2, cmdSequenceNum++,
+//    0x03, 0x02,
+//    0b00000000, 0b10100000, // x
+//    0b00000000, 0b00100000, // y
+//    0b00000000, 0b10100000, // z
+//    0b00000000, 0b00100000  // w
+//  };
+
+  // PCB version. IMU mounted with X->Down, Y->North, Z->East
   uint8_t REORIENT_SENSOR[] = {
     0xf2, cmdSequenceNum++,
     0x03, 0x02,
-    0b00000000, 0b10100000, // x
-    0b00000000, 0b00100000, // y
-    0b00000000, 0b10100000, // z
-    0b00000000, 0b00100000  // w
+	0b00000000, 0b00000000, // x
+	0b10111111, 0b11010010, // y
+	0b01000001, 0b00101101, // z
+	0b00000000, 0b00000000  // w
   };
 
   // WAKE UP

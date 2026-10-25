@@ -5,8 +5,8 @@
  *      Author: hapro
  */
 
-//#ifndef SRC_MESSAGE_PROTOCOL_H_
-//#define SRC_MESSAGE_PROTOCOL_H_
+#ifndef SRC_MESSAGE_PROTOCOL_H_
+#define SRC_MESSAGE_PROTOCOL_H_
 
 
 
@@ -29,11 +29,11 @@ typedef enum {
 
 // Each of the below must be exactly 32 bytes
 typedef struct {
-  uint8_t cur_mode;         // + 1B     = 1B
-  RWP_DATA_KIND data_type;  // + 1B     = 2B
-  int16_t rotary_encoder;   // + 2B     = 4B
-  float yaw, roll, pitch;   // + 4B * 3 = 16B
-  uint8_t _pad[16];         // + 16B    = 32B
+  uint8_t cur_mode;           // + 1B     = 1B
+  RWP_DATA_KIND data_type;    // + 1B     = 2B
+  uint8_t _pad1[2];           // + 2B     = 4B
+  float yaw, roll, pitch, RPM;// + 4B * 4 = 20B
+  uint8_t _pad2[12];          // + 12B    = 32B
 } RWP_SENSOR_DATA;
 
 typedef struct {
@@ -42,8 +42,8 @@ typedef struct {
   uint8_t control_mode;       // +1B     = 3B
   uint8_t _pad1[1];           // +1B     = 4B
   float v_a, v_b, v_c;        // +4B * 3 = 16B
-  float ctrl_value;           // +4B     = 20B
-  uint8_t _pad[12];           // +12B    = 32B
+  float v_d, v_e, v_f;        // +4B * 3 = 28B
+  float ctrl_value;           // +4B     = 32B
 } RWP_CONTROL_DATA;
 
 typedef union {
@@ -67,4 +67,4 @@ typedef union {
 } RMT_MESSAGE_FRAME;
 
 
-//#endif /* SRC_MESSAGE_PROTOCOL_H_ */
+#endif /* SRC_MESSAGE_PROTOCOL_H_ */

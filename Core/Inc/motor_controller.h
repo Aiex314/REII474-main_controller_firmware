@@ -13,9 +13,15 @@
 
 #include "main.h"
 
+extern TIM_HandleTypeDef* htim_mot;
+
 void setMotorBeep(float freq);
 void stopBeep();
 void setMotorOutput(float v);
 void playStartupTune();
+
+void start_sound();
+uint8_t next_sample();
+void stop_sound();
 
 #endif /* SRC_MOTOR_CONTROLLER_H_ */
