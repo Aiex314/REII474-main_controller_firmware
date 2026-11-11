@@ -7939,7 +7939,7 @@ static const int8_t funny_sound[] = {
 //  0x04, 0xf2, 0x0a, 0xf6, 0x13, 0x02, 0x15, 0x0c, 0x0a, 0x09, 0x09, 0x0c,
 //  0x0f, 0x17
 };
-static uint32_t funny_sound_len = 0; //93806;
+static uint32_t funny_sound_len = 0; //= 93806;
 static uint32_t cur_sample = 0;
 
 

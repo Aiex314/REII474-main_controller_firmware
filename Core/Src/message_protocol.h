@@ -22,6 +22,13 @@ typedef enum {
 } RWP_MODE;
 
 typedef enum {
+  RWP_CTRL_NONE,
+  RWP_CTRL_SWINGUP,
+  RWP_CTRL_LINEAR,
+  RWP_CTRL_SWINGDOWN
+} RWP_CTRL_MODE;
+
+typedef enum {
   SENSOR_DATA,
   CONTROL_DATA,
 } RWP_DATA_KIND;
@@ -31,7 +38,8 @@ typedef enum {
 typedef struct {
   uint8_t cur_mode;           // + 1B     = 1B
   RWP_DATA_KIND data_type;    // + 1B     = 2B
-  uint8_t _pad1[2];           // + 2B     = 4B
+  RWP_CTRL_MODE ctrl_mode;    // + 1B     = 3B
+  uint8_t _pad1[1];           // + 1B     = 4B
   float yaw, roll, pitch, RPM;// + 4B * 4 = 20B
   uint8_t _pad2[12];          // + 12B    = 32B
 } RWP_SENSOR_DATA;
@@ -39,7 +47,7 @@ typedef struct {
 typedef struct {
   uint8_t cur_mode;           // +1B     = 1B
   RWP_DATA_KIND data_type;    // +1B     = 2B
-  uint8_t control_mode;       // +1B     = 3B
+  RWP_CTRL_MODE ctrl_mode;    // +1B     = 3B
   uint8_t _pad1[1];           // +1B     = 4B
   float v_a, v_b, v_c;        // +4B * 3 = 16B
   float v_d, v_e, v_f;        // +4B * 3 = 28B

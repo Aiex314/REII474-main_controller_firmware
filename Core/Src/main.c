@@ -70,12 +70,13 @@ const float RDPS_TO_RPM = 60/(2*PI);
 // Maximum controller output
 #define MAX_CTRL 1.0
 // Controller frequency
-#define CTRL_FREQ 100.0
+#define CTRL_FREQ 200.0
 // Hysteresis limits for linear controller
 const float LIM_LIN_START_ANGLE  = 3.5*DEG_TO_RAD;
-const float LIM_LIN_START_SPEED  = 0.1;
+const float LIM_LIN_START_SPEED  = 0.5;
 const float LIM_LIN_STOP_ANGLE = 7.5*DEG_TO_RAD;
 const float LIM_LIN_STOP_SPEED = 999.0;
+const float SWING_DOWN_SPEED_MULT = 10.0;
 // Yaw offset (radians)
 float YAWR_OFFSET = 3.30*DEG_TO_RAD;
 float YAW_OFFSET  = 0;
@@ -88,7 +89,7 @@ const float ROT_E_TO_ROT_VEL = 2.0*PI*CTRL_FREQ/ROTARY_ENC_PPR;
 
 // Physical parameters of RWP
 const float J_f = 0.000058;   // Reaction wheel moment of inertia as kg/m^2
-const float J_p = 0.0210;     // Pendulum arm moment of inertia as kg/m^2
+      float J_p = 0.0250;     // Pendulum arm moment of inertia as kg/m^2
 const float K_g = 1.3726;     // Potential energy constant
 /* USER CODE END PV */
 
@@ -115,8 +116,14 @@ float pitch, roll;
 // Rotary encoder output
 int16_t pulse_count = 0;
 
-// Wireless comms synchronization crap
-uint8_t last_cmd_counter = 0, last_imu_counter = 0;
+// Wireless comms stuff
+uint8_t last_cmd_counter = 0;
+uint8_t fault_acknowledged = 0;
+
+// RWP state
+RWP_MODE rwp_mode = RWP_MODE_HALTED;
+RWP_DATA_KIND rwp_data = SENSOR_DATA;
+RWP_CTRL_MODE rwp_ctrl = RWP_CTRL_SWINGUP;
 
 // There are two sources of pin interrupts. These are the IMU's IRQ and the rotary encoder.
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
@@ -146,9 +153,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     // Save previously measured values
     float yaw_prev = yaw, yaw_raw_prev = yaw_raw;
 
-    // Update for synchronisation
-    last_imu_counter = 0;
-
     // Get the raw IMU values
     BNO_IRQcallback();
     BNO_getYPR(&yaw_raw, &pitch, &roll);
@@ -156,23 +160,25 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     // Calculate raw dyaw for linear region
     // This is only used when yaw is smol, so adjusting for
     // the discontinuity is not necessary
-    dyaw_raw = (yaw_raw - yaw_raw_prev)*100.0;
+    dyaw_raw = (yaw_raw - yaw_raw_prev)*CTRL_FREQ;
 
     // Correct the plain yaw for nonlinearity
     yaw = motorLinearizationLookup(yaw_raw);
 
     // Calculate plain dyaw, being aware of the discontinuity
     if (yaw - yaw_prev > PI)
-      dyaw = (yaw - yaw_prev - 2*PI)*100.0;
+      dyaw = (yaw - yaw_prev - 2*PI)*CTRL_FREQ;
     else if (yaw - yaw_prev < -PI)
-      dyaw = (yaw - yaw_prev + 2*PI)*100.0;
+      dyaw = (yaw - yaw_prev + 2*PI)*CTRL_FREQ;
     else
-      dyaw = (yaw - yaw_prev)*100.0;
+      dyaw = (yaw - yaw_prev)*CTRL_FREQ;
 
     // IIR filter for dyaw
     static float last_iir_output = 0.0;
     last_iir_output = 0.80 * last_iir_output + 0.20 * dyaw;
     dyaw_smooth = last_iir_output;
+
+
 
     return;
   }
@@ -193,16 +199,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   }
 }
 
-RWP_MODE rwp_mode = RWP_MODE_HALTED;
-RWP_DATA_KIND rwp_data = SENSOR_DATA;
-
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
   // Control variables
   static float  user_input = 0.0;
   static double a_p, a_pl, v_f, v_p, v_pl;
   static double KE_p, KE_f, PE_p, total_energy;
   static float  motor_output = 0.0;
-  static uint8_t  auto_mode  = 0;
 
   // Communication variables
   static uint8_t missed_packets = 0;
@@ -217,7 +219,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     v_p  = dyaw_smooth;                  // Linearised omega_p
     v_pl = dyaw_raw;                     // Raw omega_p
     v_f  = -ROT_E_TO_ROT_VEL*pulse_count; // Reaction wheel vel
-    float v_f_abs = v_f + v_p; // Absolute velocity of reaction wheel
 
     // System energy estimation (all J)
     KE_p = v_p*v_p*J_p/2.0;
@@ -228,19 +229,31 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     // Reset pulse_count to get a relative measurement
     pulse_count = 0;
 
+
     // Speed and angle hysteresis for linear controller
-    if (auto_mode == 1) {
+    if (rwp_ctrl == RWP_CTRL_LINEAR) {
+      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
       // If outside of speed or angle limits, disable linear controller
       if (a_pl > LIM_LIN_STOP_ANGLE || a_pl < -LIM_LIN_STOP_ANGLE || v_p > LIM_LIN_STOP_SPEED || v_p < -LIM_LIN_STOP_SPEED)
-        auto_mode = 0;
+        rwp_ctrl = RWP_CTRL_SWINGUP;
+    }
+    else if (rwp_ctrl == RWP_CTRL_SWINGUP) {
+      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_SET);
+      // If inside of speed and angle limits, enable linear controller
+      if (a_pl > -LIM_LIN_START_ANGLE && a_pl < LIM_LIN_START_ANGLE && v_p > -LIM_LIN_START_SPEED && v_p < LIM_LIN_START_SPEED)
+        rwp_ctrl = RWP_CTRL_LINEAR;
+      // If outside of speed limits, swing down a bit before retrying...
+      else if (a_pl > -LIM_LIN_STOP_ANGLE && a_pl < LIM_LIN_STOP_ANGLE && (v_p < -SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED || v_p > SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED)) {
+        J_p *= 1.05;
+      	rwp_ctrl = RWP_CTRL_SWINGDOWN;
+      }
     }
     else {
-      // If inside of speed and angle limits, enable linear controller
-      if (a_pl > -LIM_LIN_START_ANGLE && a_pl < LIM_LIN_START_ANGLE && v_p > -LIM_LIN_STOP_SPEED && v_p < LIM_LIN_STOP_SPEED)
-        auto_mode = 1;
+      if (v_p < 0.1 && v_p > -0.1)
+        rwp_ctrl = RWP_CTRL_SWINGUP;
     }
 
-
+    // Calibration mode
     if (rwp_mode == RWP_MODE_CALIBRATION) {
       YAWR_OFFSET = yaw_raw;
       YAW_OFFSET  = yaw;
@@ -255,22 +268,25 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     else if (rwp_mode == RWP_MODE_HALTED)
       motor_output = 0;
     // If the pendulum state is within acceptable bounds, use linear controller
-    else if (rwp_mode == RWP_MODE_AUTO && auto_mode == 1)
-      motor_output = -(28.28*a_pl + 4.03*v_pl + 0.0317*v_f);
-//      motor_output = -(100*a_pl + 16*v_pl - 0.03*v_f);
+    else if (rwp_mode == RWP_MODE_AUTO && rwp_ctrl == RWP_CTRL_LINEAR)
+      motor_output = -(36.62*a_pl + 5.16*v_pl + 0.044*v_f);
     // Otherwise, activate the swingup controller
-    else if  (rwp_mode == RWP_MODE_AUTO && auto_mode != 1) {
+    else if  (rwp_mode == RWP_MODE_AUTO && rwp_ctrl == RWP_CTRL_SWINGUP) {
       // IIR lowpass filter :3
       static double prev_output = 0.0;
       double output = 0.3*total_energy + 0.7*prev_output;
       prev_output = output;
 
-      motor_output = -(float)(output * v_p);
+      motor_output = -(float)(output * v_p)*(24.0/24.0);
     }
     // If the rotor lock mode is enabled, resist any rotation of the rotor
-    else
+    else if (rwp_mode == RWP_MODE_LOCK)
       motor_output = 0.1*v_f;
-//
+    // In any fault mode, lightly brake the motor...
+    else
+      motor_output = 0.01*v_f;
+
+
     // Clip the control value
     if (motor_output > MAX_CTRL) motor_output = MAX_CTRL;
     else if (motor_output < -MAX_CTRL) motor_output = -MAX_CTRL;
@@ -278,20 +294,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     // Update motor output
     setMotorOutput(motor_output);
   }
-  // 1kHz timer for communications
+  // 200Hz timer for communications
   else if (htim == &htim9) {
     /* ============== COMMUNICATIONS CODE ============= */
     // Increment synchronization counters
-//    ++last_imu_counter;
     ++last_cmd_counter;
-
-    // If the last or next IMU irq is less than 20ms away, cancel the poll
-//    if (last_imu_counter < 3 || last_imu_counter > 7) return;
 
     // If there's data available from the nRF24, get it!
     uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
     if ((fifo_status & 0b00000001) == 0) {
-      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
+//      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
 
       // Packet has been received, update appropriate variables
       last_cmd_counter = 0;
@@ -303,7 +315,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
       int16_t raw_value = rmt_message.control_msg.pot_value;
       user_input = raw_value/2048.0f;
       // and update the mode based on received packet
-      rwp_mode = rmt_message.control_msg.req_mode;
+      RWP_MODE req_mode = rmt_message.control_msg.req_mode;
+      if (rwp_mode >= 0x80 && rwp_mode == rmt_message.control_msg.req_mode) {
+        fault_acknowledged = 1;
+        rwp_mode = RWP_MODE_HALTED;
+      }
+      else {
+        if (req_mode >= 0x80 && fault_acknowledged == 1)
+          rwp_mode = RWP_MODE_HALTED;
+        else
+          rwp_mode = rmt_message.control_msg.req_mode;
+      }
       rwp_data = rmt_message.control_msg.req_data_type;
 
       // Clear, rebuild and set new acknowledge payload
@@ -311,25 +333,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
       memset(rwp_message.bytes, 0x00, 32);
       rwp_message.sensor_data.data_type = rwp_data;
       rwp_message.sensor_data.cur_mode = rwp_mode;
-      if (last_imu_counter > 10) {
-        memset(rwp_message.bytes, 0xff, 32);
-      }
-      else if (rwp_data == SENSOR_DATA) {
+      if (rwp_data == SENSOR_DATA) {
         rwp_message.sensor_data.yaw   = RAD_TO_DEG * yaw;
         rwp_message.sensor_data.pitch = RAD_TO_DEG * pitch;
         rwp_message.sensor_data.roll  = RAD_TO_DEG * roll;
         rwp_message.sensor_data.RPM   = RDPS_TO_RPM * v_f;
+        rwp_message.sensor_data.ctrl_mode = rwp_ctrl;
       }
       else {
-        uint8_t control_mode = auto_mode;
-        if (rwp_mode != RWP_MODE_AUTO) control_mode = 2;
-        rwp_message.control_data.control_mode = control_mode;
-        rwp_message.control_data.ctrl_value   = motor_output;
+        rwp_message.control_data.ctrl_mode  = rwp_ctrl;
+        rwp_message.control_data.ctrl_value = motor_output;
         rwp_message.control_data.v_a = a_p;
         rwp_message.control_data.v_b = v_p;
         rwp_message.control_data.v_c = v_f;
-        rwp_message.control_data.v_d = PE_p;
-        rwp_message.control_data.v_e = KE_p;
+        rwp_message.control_data.v_d = a_pl;
+        rwp_message.control_data.v_e = v_pl;
         rwp_message.control_data.v_f = KE_f;
       }
       writeNRF24ackPayload(rwp_message.bytes, 32, 0);
@@ -422,6 +440,7 @@ int main(void)
 
   // Finally, enable the motor controller after setting everything else up
   HAL_TIM_Base_Start_IT(&htim5);
+
 
 
 
@@ -640,7 +659,7 @@ static void MX_TIM5_Init(void)
 
   /* USER CODE END TIM5_Init 1 */
   htim5.Instance = TIM5;
-  htim5.Init.Prescaler = 999;
+  htim5.Init.Prescaler = 499;
   htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim5.Init.Period = 999;
   htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -684,9 +703,9 @@ static void MX_TIM9_Init(void)
 
   /* USER CODE END TIM9_Init 1 */
   htim9.Instance = TIM9;
-  htim9.Init.Prescaler = 499;
+  htim9.Init.Prescaler = 245;
   htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim9.Init.Period = 999;
+  htim9.Init.Period = 983;
   htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim9.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim9) != HAL_OK)
