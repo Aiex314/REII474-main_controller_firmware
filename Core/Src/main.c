@@ -23,12 +23,18 @@
 /* USER CODE BEGIN Includes */
 #include <math.h>
 
+// Drivers
 #include "nRF24_driver.h"
 #include "bno_driver.h"
 #include "motor_controller.h"
 
+// Automatic controller
+#include "auto_controller.h"
+
+// Wireless communication protocol
 #include "message_protocol.h"
 
+// Linearisation table, et. al.
 #include "lookup_tables.h"
 /* USER CODE END Includes */
 
@@ -203,7 +209,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
   // Control variables
   static float  user_input = 0.0;
   static double a_p, a_pl, v_f, v_p, v_pl;
-  static double KE_p, KE_f, PE_p, total_energy;
+  static double KE_p, KE_f, PE_p;
   static float  motor_output = 0.0;
 
   // Communication variables
@@ -219,66 +225,33 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     v_p  = dyaw_smooth;                  // Linearised omega_p
     v_pl = dyaw_raw;                     // Raw omega_p
     v_f  = -ROT_E_TO_ROT_VEL*pulse_count; // Reaction wheel vel
+    // Send sensor state to auto controller
+    setSensorState(a_p, a_pl, v_p, v_pl, v_f);
 
     // System energy estimation (all J)
     KE_p = v_p*v_p*J_p/2.0;
     KE_f = v_f*v_f*J_f/2.0;
     PE_p = K_g * (cos(a_p)-1);
-    total_energy = KE_p + KE_f + PE_p;
 
     // Reset pulse_count to get a relative measurement
     pulse_count = 0;
 
 
-    // Speed and angle hysteresis for linear controller
-    if (rwp_ctrl == RWP_CTRL_LINEAR) {
-      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
-      // If outside of speed or angle limits, disable linear controller
-      if (a_pl > LIM_LIN_STOP_ANGLE || a_pl < -LIM_LIN_STOP_ANGLE || v_p > LIM_LIN_STOP_SPEED || v_p < -LIM_LIN_STOP_SPEED)
-        rwp_ctrl = RWP_CTRL_SWINGUP;
-    }
-    else if (rwp_ctrl == RWP_CTRL_SWINGUP) {
-      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_SET);
-      // If inside of speed and angle limits, enable linear controller
-      if (a_pl > -LIM_LIN_START_ANGLE && a_pl < LIM_LIN_START_ANGLE && v_p > -LIM_LIN_START_SPEED && v_p < LIM_LIN_START_SPEED)
-        rwp_ctrl = RWP_CTRL_LINEAR;
-      // If outside of speed limits, swing down a bit before retrying...
-      else if (a_pl > -LIM_LIN_STOP_ANGLE && a_pl < LIM_LIN_STOP_ANGLE && (v_p < -SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED || v_p > SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED)) {
-        J_p *= 1.05;
-      	rwp_ctrl = RWP_CTRL_SWINGDOWN;
-      }
-    }
-    else {
-      if (v_p < 0.1 && v_p > -0.1)
-        rwp_ctrl = RWP_CTRL_SWINGUP;
-    }
-
-    // Calibration mode
+    // In calibration mode, continuously set the angle offsets to the current angles and break the motor
     if (rwp_mode == RWP_MODE_CALIBRATION) {
       YAWR_OFFSET = yaw_raw;
       YAW_OFFSET  = yaw;
-      motor_output = 0.2*v_f;
+      motor_output = 0.1*v_f;
     }
-
-
     // If in manual mode, set the output to the potentiometer value
-    if (rwp_mode == RWP_MODE_MANUAL)
+    else if (rwp_mode == RWP_MODE_MANUAL)
       motor_output = user_input;
     // If in halt mode, set the output to zero
     else if (rwp_mode == RWP_MODE_HALTED)
       motor_output = 0;
-    // If the pendulum state is within acceptable bounds, use linear controller
-    else if (rwp_mode == RWP_MODE_AUTO && rwp_ctrl == RWP_CTRL_LINEAR)
-      motor_output = -(36.62*a_pl + 5.16*v_pl + 0.044*v_f);
-    // Otherwise, activate the swingup controller
-    else if  (rwp_mode == RWP_MODE_AUTO && rwp_ctrl == RWP_CTRL_SWINGUP) {
-      // IIR lowpass filter :3
-      static double prev_output = 0.0;
-      double output = 0.3*total_energy + 0.7*prev_output;
-      prev_output = output;
-
-      motor_output = -(float)(output * v_p)*(24.0/24.0);
-    }
+    // In auto mode, get the auto controller value
+    else if (rwp_mode == RWP_MODE_AUTO)
+      motor_output = getMotorCtrlValue();
     // If the rotor lock mode is enabled, resist any rotation of the rotor
     else if (rwp_mode == RWP_MODE_LOCK)
       motor_output = 0.1*v_f;
@@ -286,6 +259,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     else
       motor_output = 0.01*v_f;
 
+
+    // For safety, prevent the motor from going faster than 170rad/s
+    if (v_f >  170) motor_output += 0.01*(v_f-170);
+    if (v_f < -170) motor_output += 0.01*(v_f+170);
 
     // Clip the control value
     if (motor_output > MAX_CTRL) motor_output = MAX_CTRL;
@@ -303,8 +280,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
     // If there's data available from the nRF24, get it!
     uint8_t fifo_status = readNRF24register(N24_FIFO_STATUS);
     if ((fifo_status & 0b00000001) == 0) {
-//      HAL_GPIO_WritePin(BLINK_GPIO_Port, BLINK_Pin, GPIO_PIN_RESET);
-
       // Packet has been received, update appropriate variables
       last_cmd_counter = 0;
       missed_packets = 0;
@@ -338,16 +313,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
         rwp_message.sensor_data.pitch = RAD_TO_DEG * pitch;
         rwp_message.sensor_data.roll  = RAD_TO_DEG * roll;
         rwp_message.sensor_data.RPM   = RDPS_TO_RPM * v_f;
-        rwp_message.sensor_data.ctrl_mode = rwp_ctrl;
+        rwp_message.sensor_data.ctrl_mode = getCtrlState();
       }
       else {
-        rwp_message.control_data.ctrl_mode  = rwp_ctrl;
+        rwp_message.control_data.ctrl_mode  = getCtrlState();
         rwp_message.control_data.ctrl_value = motor_output;
         rwp_message.control_data.v_a = a_p;
         rwp_message.control_data.v_b = v_p;
         rwp_message.control_data.v_c = v_f;
-        rwp_message.control_data.v_d = a_pl;
-        rwp_message.control_data.v_e = v_pl;
+        rwp_message.control_data.v_d = PE_p;
+        rwp_message.control_data.v_e = KE_p;
         rwp_message.control_data.v_f = KE_f;
       }
       writeNRF24ackPayload(rwp_message.bytes, 32, 0);

@@ -8,7 +8,7 @@
 #ifndef SRC_MESSAGE_PROTOCOL_H_
 #define SRC_MESSAGE_PROTOCOL_H_
 
-
+#include <stdint.h>
 
 typedef enum {
   RWP_MODE_NO_COMMS,
