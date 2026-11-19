@@ -16,11 +16,11 @@
 const static float DEG_TO_RAD = PI/180.0;
 
 // Hysteresis limits for linear controller
-static float LIM_LIN_START_ANGLE  = 3.5*DEG_TO_RAD;
-static float LIM_LIN_START_SPEED  = 1.0;
-static float LIM_LIN_STOP_ANGLE = 7.5*DEG_TO_RAD;
-static float LIM_LIN_STOP_SPEED = 999.0;
-static float SWING_DOWN_SPEED_MULT = 5.0;
+const float LIM_LIN_START_ANGLE  = 3.5*DEG_TO_RAD;
+const float LIM_LIN_START_SPEED  = 2.0;
+const float LIM_LIN_STOP_ANGLE = 7.5*DEG_TO_RAD;
+const float LIM_LIN_STOP_SPEED = 999.0;
+const float SWING_DOWN_SPEED_MULT = 2.5;
 
 
 // Physical parameters of RWP
@@ -47,6 +47,7 @@ static RWP_CTRL_MODE rwp_ctrl = RWP_CTRL_SWINGUP;
 // number of times a swingup shot through the linear region without
 // activating the linear controller, etc.
 // This is used to tune the physical parameters on the fly.
+uint32_t balance_counter;
 void updatePerformance() {
   uint8_t in_lin_region = (a_pl > -LIM_LIN_START_ANGLE && a_pl < LIM_LIN_START_ANGLE);
   uint8_t pend_invert = (v_p < 0.1 && v_p > -0.1) && (a_pl < 45.0 && a_pl > -45.0);
@@ -61,7 +62,7 @@ void updatePerformance() {
 	if (high_inversion == 0) {
 	  high_inversion = 1;
 	  // Adjust the pendulum inertia accordingly
-	  J_p *= 0.975;
+	  J_p *= 0.986;
 	}
   }
   else {
@@ -80,47 +81,102 @@ void updatePerformance() {
   else {
     // If we've left the linear region with the flag set, a swingthrough occurred
     if (in_lin_region_prev && in_linreg_no_lincon == 1) {
-      J_p *= 1.1;
+      J_p *= 1.05;
     }
   }
+
+  // Measure how long the RWP has balanced
+  if (rwp_ctrl == RWP_CTRL_LINEAR) ++balance_counter;
+  else balance_counter = 0;
 
   in_lin_region_prev = in_lin_region;
 }
 
-
-void updateControllerState() {
-  switch (rwp_ctrl) {
-    case RWP_CTRL_LINEAR:
-      // If outside of speed or angle limits, disable linear controller
-      if (a_pl > LIM_LIN_STOP_ANGLE || a_pl < -LIM_LIN_STOP_ANGLE || v_p > LIM_LIN_STOP_SPEED || v_p < -LIM_LIN_STOP_SPEED)
-        rwp_ctrl = RWP_CTRL_SWINGUP;
-      break;
-    case RWP_CTRL_SWINGUP:
-      // If inside of speed and angle limits, enable linear controller
-      if (a_pl > -LIM_LIN_START_ANGLE && a_pl < LIM_LIN_START_ANGLE && v_p > -LIM_LIN_START_SPEED && v_p < LIM_LIN_START_SPEED)
-        rwp_ctrl = RWP_CTRL_LINEAR;
-      // If outside of speed limits, swing down a bit before retrying...
-      else if (a_pl > -LIM_LIN_STOP_ANGLE && a_pl < LIM_LIN_STOP_ANGLE && (v_p < -SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED || v_p > SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED)) {
-        rwp_ctrl = RWP_CTRL_SWINGDOWN;
-      }
-      break;
-    case RWP_CTRL_SWINGDOWN:
-      if (v_p < 0.1 && v_p > -0.1)
-        rwp_ctrl = RWP_CTRL_SWINGUP;
-      break;
-    default:
-      rwp_ctrl = RWP_CTRL_SWINGDOWN;
-      break;
-  }
-}
-
-float getMotorCtrlValue() {
+// Angle offset used to make pendulum fall
+float fall_offset = 0;
+void updateControllerState(uint8_t rwp_mode) {
   // Update controller parameters
   updatePerformance();
 
-  // Update the auto controller state
-  updateControllerState();
+  if (rwp_ctrl == RWP_CTRL_LINEAR) fall_offset = 0;
 
+  if (rwp_mode == 0) {
+	  switch (rwp_ctrl) {
+		case RWP_CTRL_LINEAR:
+		  // If outside of speed or angle limits, disable linear controller
+		  if (a_pl > LIM_LIN_STOP_ANGLE || a_pl < -LIM_LIN_STOP_ANGLE || v_p > LIM_LIN_STOP_SPEED || v_p < -LIM_LIN_STOP_SPEED)
+			rwp_ctrl = RWP_CTRL_SWINGUP;
+		  break;
+		case RWP_CTRL_SWINGUP:
+		  // If inside of speed and angle limits, enable linear controller
+		  if (a_pl > -LIM_LIN_START_ANGLE && a_pl < LIM_LIN_START_ANGLE && v_p > -LIM_LIN_START_SPEED && v_p < LIM_LIN_START_SPEED)
+			rwp_ctrl = RWP_CTRL_LINEAR;
+		  // If outside of speed limits, swing down a bit before retrying...
+		  else if (a_pl > -LIM_LIN_STOP_ANGLE && a_pl < LIM_LIN_STOP_ANGLE && (v_p < -SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED || v_p > SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED))
+			rwp_ctrl = RWP_CTRL_SLOWDOWN;
+		  break;
+		case RWP_CTRL_SLOWDOWN:
+		  if (v_p < 0.1 && v_p > -0.1)
+			rwp_ctrl = RWP_CTRL_SWINGUP;
+		  break;
+		default:
+		  rwp_ctrl = RWP_CTRL_SLOWDOWN;
+		  break;
+	  }
+  }
+  else {
+	switch (rwp_ctrl) {
+	case RWP_CTRL_SWINGUP:
+	  // If inside of speed and angle limits, enable linear controller
+	  if (a_pl > -LIM_LIN_START_ANGLE && a_pl < LIM_LIN_START_ANGLE && v_p > -LIM_LIN_START_SPEED && v_p < LIM_LIN_START_SPEED)
+		rwp_ctrl = RWP_CTRL_LINEAR;
+	  // If outside of speed limits, swing down a bit before retrying...
+	  else if (a_pl > -LIM_LIN_STOP_ANGLE && a_pl < LIM_LIN_STOP_ANGLE && (v_p < -SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED || v_p > SWING_DOWN_SPEED_MULT*LIM_LIN_START_SPEED))
+		rwp_ctrl = RWP_CTRL_SLOWDOWN;
+	  break;
+	// In demo mode, select a random trick every once in a while when balancing
+	case RWP_CTRL_LINEAR:
+	  if (balance_counter > 1000)
+		rwp_ctrl = RWP_CTRL_FALLR;
+    // For the fall "tricks", switch to swing-up once linear region is exited
+	case RWP_CTRL_FALLL:
+	  fall_offset += 0.025;
+      if (a_pl < -LIM_LIN_STOP_ANGLE) {
+    	fall_offset = 0;
+        rwp_ctrl = RWP_CTRL_SWINGUP;
+      }
+	  break;
+	case RWP_CTRL_FALLR:
+	  fall_offset -= 0.025;
+      if (a_pl > LIM_LIN_STOP_ANGLE) {
+      	fall_offset = 0;
+        rwp_ctrl = RWP_CTRL_SWINGUP;
+      }
+	  break;
+	case RWP_CTRL_CATCH:
+	  // If inside of speed and angle limits, enable linear controller
+	  if (a_pl > -LIM_LIN_START_ANGLE && a_pl < LIM_LIN_START_ANGLE && v_p > -LIM_LIN_START_SPEED && v_p < LIM_LIN_START_SPEED)
+		rwp_ctrl = RWP_CTRL_LINEAR;
+	  // If inverting and not within speed/angle limits, swing up again
+	  else if ((v_p < 0.1 && v_p > -0.1) && (a_pl < -LIM_LIN_START_ANGLE || a_pl > LIM_LIN_START_ANGLE))
+	    rwp_ctrl = RWP_CTRL_SWINGUP;
+	  break;
+	case RWP_CTRL_SWINGDOWN:
+	  if ((a_pl > 170 || a_pl < -170) && (v_p < 0.1 && v_p > -0.1))
+		rwp_ctrl = RWP_CTRL_SWINGUP;
+	  break;
+	case RWP_CTRL_SLOWDOWN:
+	  if (v_p < 0.1 && v_p > -0.1)
+		rwp_ctrl = RWP_CTRL_SWINGUP;
+	  break;
+	default:
+	  rwp_ctrl = RWP_CTRL_SLOWDOWN;
+	  break;
+	}
+  }
+}
+
+float calculateCtrlValue() {
   // System energy estimation (all J)
   float KE_p = v_p*v_p*J_p/2.0;
   float KE_f = v_f*v_f*J_f/2.0;
@@ -129,19 +185,40 @@ float getMotorCtrlValue() {
 
   static float motor_output = 0;
 
-  if (rwp_ctrl == RWP_CTRL_LINEAR)
-    motor_output = -(36.62*a_pl + 5.16*v_pl + 0.044*v_f);
-  else if (rwp_ctrl == RWP_CTRL_SWINGUP) {
-    static double prev_output = 0.0;
-    double output = 0.3*total_energy + 0.7*prev_output;
-    prev_output = output;
-    motor_output = -(float)(output * v_p)*(24.0/24.0);
-  }
-  else {
-	motor_output *= 0.95;
+  switch (rwp_ctrl) {
+  	case RWP_CTRL_LINEAR:
+  	case RWP_CTRL_FALLL:
+  	case RWP_CTRL_FALLR:
+  	  motor_output = -(36.62*(a_pl+fall_offset) + 5.16*v_pl + 0.044*v_f);
+  	  break;
+  	case RWP_CTRL_SWINGUP:
+  	  static double prev_output = 0.0;
+  	  double output = 0.3*total_energy + 0.7*prev_output;
+  	  prev_output = output;
+  	  motor_output = -(float)(output * v_p)*(24.0/24.0);
+  	  break;
+  	default:
+  	  motor_output *= 0.95;
+  	  break;
   }
 
   return motor_output;
+}
+
+float getAutoCtrlValue() {
+  // Update the auto controller state
+  updateControllerState(0);
+
+  // Return the motor control value
+  return calculateCtrlValue();
+}
+
+float getDemoCtrlValue() {
+  // Update the auto controller state
+  updateControllerState(1);
+
+  // Return the motor control value
+  return calculateCtrlValue();
 }
 
 void setSensorState(float a_pn, float a_pln, float v_pn, float v_pln, float v_fn) {

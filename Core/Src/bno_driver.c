@@ -29,8 +29,6 @@ static uint8_t cmdSequenceNum = 0;
 
 static BNO_STATE BNO_status = BNO_UNINITIALIZED;
 
-static const float RAD_TO_DEG = 180.0f/3.1415926f;
-
 static void waitForIRQ(GPIO_PinState reqState) {
   for (;;)
     if (reqState == HAL_GPIO_ReadPin(BNO_IRQ_GPIO_Port, BNO_IRQ_Pin)) break;
@@ -107,17 +105,6 @@ static uint16_t waitReceiveFrame(GPIO_PinState req_state, uint8_t* buffer, uint1
   return receiveFrame(buffer, max_size, channel);
 }
 
-// Whose idea was it to make the two SPI devices with incompatible clock configs share a bus?
-// oh wait..
-static void setSPIconfig() {
-  if (hspi_bno->Init.CLKPhase != SPI_PHASE_2EDGE || hspi_bno->Init.CLKPolarity != SPI_POLARITY_HIGH) {
-    HAL_SPI_DeInit(hspi_bno);
-    hspi_bno->Init.CLKPhase = SPI_PHASE_2EDGE;
-    hspi_bno->Init.CLKPolarity = SPI_POLARITY_HIGH;
-    HAL_SPI_Init(hspi_bno);
-  }
-}
-
 
 
 
@@ -125,10 +112,6 @@ void BNO_startup() {
   uint8_t spi_buf[64];
   uint8_t  recv_channel;
   memset(spi_buf, 0x00, 64);
-
-  // Configure the SPI1 clock correctly for the BNO
-  setSPIconfig();
-
 
 
   // Still need to make this thing non-blocking....
@@ -185,16 +168,6 @@ void BNO_startup() {
   // Z-axis. This is done intentionally, so that the sensor fusion output
   // gives 0 degrees when the pendulum is upright.
 
-//  // Original version. IMU mounted with X->North, Y->Up, Z->East
-//  uint8_t REORIENT_SENSOR[] = {
-//    0xf2, cmdSequenceNum++,
-//    0x03, 0x02,
-//    0b00000000, 0b10100000, // x
-//    0b00000000, 0b00100000, // y
-//    0b00000000, 0b10100000, // z
-//    0b00000000, 0b00100000  // w
-//  };
-
   // PCB version. IMU mounted with X->Down, Y->North, Z->East
   uint8_t REORIENT_SENSOR[] = {
     0xf2, cmdSequenceNum++,
@@ -204,6 +177,16 @@ void BNO_startup() {
 	0b01000001, 0b00101101, // z
 	0b00000000, 0b00000000  // w
   };
+
+//  // Original version. IMU mounted with X->North, Y->Up, Z->East
+//  uint8_t REORIENT_SENSOR[] = {
+//    0xf2, cmdSequenceNum++,
+//    0x03, 0x02,
+//    0b00000000, 0b10100000, // x
+//    0b00000000, 0b00100000, // y
+//    0b00000000, 0b10100000, // z
+//    0b00000000, 0b00100000  // w
+//  };
 
   // WAKE UP
   HAL_GPIO_WritePin(BNO_WAKE_GPIO_Port, BNO_WAKE_Pin, GPIO_PIN_RESET);
@@ -504,8 +487,6 @@ void BNO_IRQcallback() {
   uint8_t recv_len, recv_channel;
   uint8_t spi_buf[64];
 
-  setSPIconfig();
-
   if (BNO_status != BNO_CONFIGURED) return;
 
   // Receive a packet every time IRQ goes low
@@ -536,4 +517,8 @@ void BNO_getYPR(float* y, float* p, float* r) {
 
 void BNO_getAccuracy(float* acc) {
   *acc = curAccuracy;
+}
+
+BNO_STATE BNO_getState() {
+  return BNO_status;
 }

@@ -77,17 +77,10 @@ const float RDPS_TO_RPM = 60/(2*PI);
 #define MAX_CTRL 1.0
 // Controller frequency
 #define CTRL_FREQ 200.0
-// Hysteresis limits for linear controller
-const float LIM_LIN_START_ANGLE  = 3.5*DEG_TO_RAD;
-const float LIM_LIN_START_SPEED  = 0.5;
-const float LIM_LIN_STOP_ANGLE = 7.5*DEG_TO_RAD;
-const float LIM_LIN_STOP_SPEED = 999.0;
-const float SWING_DOWN_SPEED_MULT = 10.0;
+
 // Yaw offset (radians)
 float YAWR_OFFSET = 3.30*DEG_TO_RAD;
 float YAW_OFFSET  = 0;
-// Linear region sensitivity
-float LINEAR_SENSITIVITY = 0.718;
 
 // Rotary encoder pulses per rotation, and conversion constant
 #define ROTARY_ENC_PPR 8192.0
@@ -133,8 +126,8 @@ RWP_CTRL_MODE rwp_ctrl = RWP_CTRL_SWINGUP;
 
 // There are two sources of pin interrupts. These are the IMU's IRQ and the rotary encoder.
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
-  // IMU interrupt request
-  if (GPIO_Pin == BNO_IRQ_Pin) {
+  // IMU interrupt request (only handle if IMU is set up)
+  if ((GPIO_Pin == BNO_IRQ_Pin) && (BNO_getState() == BNO_CONFIGURED)) {
     // Yes, this is sketch.
     //
     // The IMU measurement is very non-linear, so I put it through
@@ -189,7 +182,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     return;
   }
   // Rotary encoder tick
-  else {
+  else if ((GPIO_Pin == ROT_A_Pin) || (GPIO_Pin == ROT_B_Pin)) {
     // Get the rotary encoder pin levels
     GPIO_PinState A_status = HAL_GPIO_ReadPin(ROT_A_GPIO_Port, ROT_A_Pin);
     GPIO_PinState B_status = HAL_GPIO_ReadPin(ROT_B_GPIO_Port, ROT_B_Pin);
@@ -251,7 +244,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
       motor_output = 0;
     // In auto mode, get the auto controller value
     else if (rwp_mode == RWP_MODE_AUTO)
-      motor_output = getMotorCtrlValue();
+      motor_output = getAutoCtrlValue();
+    // Likewise for demo mode...
+    else if (rwp_mode == RWP_MODE_DEMO)
+      motor_output = getDemoCtrlValue();
     // If the rotor lock mode is enabled, resist any rotation of the rotor
     else if (rwp_mode == RWP_MODE_LOCK)
       motor_output = 0.1*v_f;
@@ -260,13 +256,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim) {
       motor_output = 0.01*v_f;
 
 
-    // For safety, prevent the motor from going faster than 170rad/s
-    if (v_f >  170) motor_output += 0.01*(v_f-170);
-    if (v_f < -170) motor_output += 0.01*(v_f+170);
-
     // Clip the control value
     if (motor_output > MAX_CTRL) motor_output = MAX_CTRL;
     else if (motor_output < -MAX_CTRL) motor_output = -MAX_CTRL;
+
+    // For safety, prevent the motor from going faster than 170rad/s
+    if (v_f >  170) motor_output += 0.02*(v_f-170);
+    if (v_f < -170) motor_output += 0.02*(v_f+170);
 
     // Update motor output
     setMotorOutput(motor_output);

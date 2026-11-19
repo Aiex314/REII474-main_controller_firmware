@@ -11,7 +11,8 @@
 #include "message_protocol.h"
 #include "math.h"
 
-float getMotorCtrlValue();
+float getAutoCtrlValue();
+float getDemoCtrlValue();
 RWP_CTRL_MODE getCtrlState();
 void  setSensorState(float, float, float, float, float);
 

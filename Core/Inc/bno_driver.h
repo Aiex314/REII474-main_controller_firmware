@@ -54,5 +54,7 @@ void BNO_startRotationVector();
 
 void BNO_getYPR(float* y, float* p, float* r);
 
+BNO_STATE BNO_getState();
+
 
 #endif /* INC_BNO_DRIVER_H_ */
